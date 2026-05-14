@@ -247,7 +247,7 @@ def iis2json(ilp_path, model_dict):
         file.close()
         ilp_lines = ilp_string.split("\n")
         for iis_line in ilp_lines:
-            if ":" in iis_line:
+            if ":" in iis_line and not iis_line.lstrip().startswith("\\"):
                 constr_name = iis_line.split(":")[0].split("(")[0].replace(" ", "")
                 constr_names.add(constr_name)
 

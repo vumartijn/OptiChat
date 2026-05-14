@@ -1,7 +1,7 @@
 import copy
 import time
 from typing import Dict, Optional, Union, List
-from openai import Client, OpenAI
+from anthropic import Anthropic
 from prompts import get_prompts
 from internal_tools import feasibility_restoration, sensitivity_analysis, components_retrival, evaluate_modification
 from internal_tools import syntax_guidance, fnArgsDecoder
@@ -11,8 +11,84 @@ import re
 #import streamlit as st
 
 
+_DEFAULT_MAX_TOKENS = 8192
+_TOOL_CALL_MAX_TOKENS = 4096
+
+
+def _supports_temperature(model_id: str) -> bool:
+    # Opus 4.7 removed sampling parameters; sending temperature returns 400.
+    return not str(model_id).startswith("claude-opus-4-7")
+
+
+def _to_anthropic_messages(messages, base_system_prompt):
+    """Convert OpenAI-style messages to (system_str, anthropic_messages).
+
+    - role=system entries inside the messages list are pulled into the system string.
+    - Consecutive same-role messages are collapsed by joining with two newlines.
+    - The first message must be 'user'; a placeholder is inserted otherwise.
+    """
+    system_parts = [base_system_prompt] if base_system_prompt else []
+    non_system = []
+    for m in messages:
+        if m["role"] == "system":
+            system_parts.append(m["content"])
+        else:
+            non_system.append({"role": m["role"], "content": m["content"]})
+
+    collapsed = []
+    for m in non_system:
+        if collapsed and collapsed[-1]["role"] == m["role"]:
+            collapsed[-1]["content"] = collapsed[-1]["content"] + "\n\n" + m["content"]
+        else:
+            collapsed.append(dict(m))
+
+    if collapsed and collapsed[0]["role"] != "user":
+        collapsed.insert(0, {"role": "user", "content": "[Conversation start]"})
+
+    system_str = "\n\n".join(s for s in system_parts if s) or None
+    return system_str, collapsed
+
+
+def _convert_tools_to_anthropic(tools):
+    if not tools:
+        return None
+    converted = []
+    for t in tools:
+        if isinstance(t, dict) and "function" in t:
+            fn = t["function"]
+            converted.append({
+                "name": fn["name"],
+                "description": fn.get("description", ""),
+                "input_schema": fn["parameters"],
+            })
+        else:
+            converted.append(t)
+    return converted
+
+
+def _convert_tool_choice_to_anthropic(tc):
+    if tc is None or tc == "auto":
+        return {"type": "auto"}
+    if tc == "required":
+        return {"type": "any"}
+    if isinstance(tc, dict) and tc.get("type") == "function":
+        return {"type": "tool", "name": tc["function"]["name"]}
+    return tc
+
+
+def _stream_text_generator(stream_cm):
+    """Yield text chunks from an Anthropic streaming context manager.
+
+    Keeps the context open until the generator is exhausted, so Streamlit's
+    `st.write_stream` can iterate it directly.
+    """
+    with stream_cm as stream:
+        for text in stream.text_stream:
+            yield text
+
+
 class Agent:
-    def __init__(self, name, description, client, llm="gpt-4-turbo-preview", **kwargs):
+    def __init__(self, name, description, client, llm="claude-haiku-4-5", **kwargs):
         self.name = name
         self.description = description
         self.client = client
@@ -44,31 +120,26 @@ class Agent:
                 assert "role" in message
                 assert "content" in message
 
-        if not prompt is None:
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt},
-            ]
+        if prompt is not None:
+            system_str = self.system_prompt
+            anthropic_messages = [{"role": "user", "content": prompt}]
+        else:
+            system_str, anthropic_messages = _to_anthropic_messages(messages, self.system_prompt)
 
-        # print("=" * 10)
-        # print(f'llm_call is called, the following messages are sent to the llm: ')
-        # for message in messages:
-        #     print(f'{message["role"]}: {message["content"]}')
-        # print("=" * 10)
-
-        if type(self.client) in [OpenAI, Client]:
-            completion = self.client.chat.completions.create(
-                model=self.llm,
-                messages=messages,
-                seed=seed,
-                stream=stream,
-            )
+        if isinstance(self.client, Anthropic):
+            kwargs = {
+                "model": self.llm,
+                "max_tokens": _DEFAULT_MAX_TOKENS,
+                "messages": anthropic_messages,
+            }
+            if system_str:
+                kwargs["system"] = system_str
 
             if stream:
-                return completion
-            else:
-                content = completion.choices[0].message.content
-                return content
+                return _stream_text_generator(self.client.messages.stream(**kwargs))
+
+            response = self.client.messages.create(**kwargs)
+            return "".join(b.text for b in response.content if b.type == "text")
 
     @staticmethod
     def generate_pseudo_messages(messages: List[Dict], team_conversation: List[Dict],
@@ -115,45 +186,36 @@ class Agent:
                 assert "role" in message
                 assert "content" in message
 
-        if not prompt is None:
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt},
-            ]
+        if prompt is not None:
+            system_str = self.system_prompt
+            anthropic_messages = [{"role": "user", "content": prompt}]
+        else:
+            system_str, anthropic_messages = _to_anthropic_messages(messages, self.system_prompt)
 
         if json_mode:
-            response_format = {"type": "json_object"}
-        else:
-            response_format = {"type": "text"}
+            json_instruction = "Respond with a single valid JSON object only. Do not include any text outside the JSON."
+            system_str = (system_str + "\n\n" + json_instruction) if system_str else json_instruction
 
-        if type(self.client) in [OpenAI, Client]:
-            if self.llm not in ["o3"]:
-                completion = self.client.chat.completions.create(
-                model=self.llm,
-                messages=messages,
-                seed=seed,
-                temperature=temperature,
-                response_format=response_format,
-                stream=stream,
-                )
-            else:
-                completion = self.client.chat.completions.create(
-                model=self.llm,
-                messages=messages,
-                seed=seed,
-                response_format=response_format,
-                stream=stream,
-                )
+        if isinstance(self.client, Anthropic):
+            kwargs = {
+                "model": self.llm,
+                "max_tokens": _DEFAULT_MAX_TOKENS,
+                "messages": anthropic_messages,
+            }
+            if system_str:
+                kwargs["system"] = system_str
+            if _supports_temperature(self.llm):
+                kwargs["temperature"] = temperature
 
             if stream:
-                return completion
-            else:
-                content = completion.choices[0].message.content
-                return content
+                return _stream_text_generator(self.client.messages.stream(**kwargs))
+
+            response = self.client.messages.create(**kwargs)
+            return "".join(b.text for b in response.content if b.type == "text")
 
 
 class Interpreter(Agent):
-    def __init__(self, client: Client, **kwargs):
+    def __init__(self, client: Anthropic, **kwargs):
         super().__init__(
             name="Interpreter",
             description="This is an operations research agent that is an expert in interpreting optimization models and codes to non-experts.",
@@ -408,7 +470,7 @@ class Interpreter(Agent):
 
 class Coordinator(Agent):
     def __init__(
-        self, client: Client, agents: [Agent], max_rounds: int = 5, **kwargs
+        self, client: Anthropic, agents: [Agent], max_rounds: int = 5, **kwargs
     ):
         super().__init__(
             name="Coordinator",
@@ -556,7 +618,7 @@ class Coordinator(Agent):
 
 class Explainer(Agent):
     def __init__(
-        self, client: Client, max_rounds: int = 5, **kwargs
+        self, client: Anthropic, max_rounds: int = 5, **kwargs
     ):
         super().__init__(
             name="Explainer",
@@ -580,7 +642,7 @@ class Explainer(Agent):
 
 
 class Engineer(Agent):
-    def __init__(self, client: Client, **kwargs):
+    def __init__(self, client: Anthropic, **kwargs):
         super().__init__(
             name="Engineer",
             description="This is an engineer agent whose task is to execute tools and functions when user's query requires an interaction with optimization model. The engineer agent provides technical feedback instead of natural-language explanations."
@@ -671,11 +733,11 @@ class Engineer(Agent):
                 assert "role" in message
                 assert "content" in message
 
-        if not prompt is None:
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt},
-            ]
+        if prompt is not None:
+            system_str = self.system_prompt
+            anthropic_messages = [{"role": "user", "content": prompt}]
+        else:
+            system_str, anthropic_messages = _to_anthropic_messages(messages, self.system_prompt)
 
         if is_syntax_guidance:
             tools = self.syntax_guidance_tool
@@ -693,34 +755,33 @@ class Engineer(Agent):
                 raise Exception("Invalid mode!")
             tool_choice = "required"
 
-        if type(self.client) in [OpenAI, Client]:
-            if self.llm not in ["o3"]:
-                completion = self.client.chat.completions.create(
-                model=self.llm,
-                messages=messages,
-                seed=seed,
-                temperature=temperature,
-                tools=tools,
-                tool_choice=tool_choice
-                )
-            else:
-                completion = self.client.chat.completions.create(
-                model=self.llm,
-                messages=messages,
-                seed=seed,
-                tools=tools,
-                tool_choice=tool_choice
-                )
+        anthropic_tools = _convert_tools_to_anthropic(tools)
+        anthropic_tool_choice = _convert_tool_choice_to_anthropic(tool_choice)
 
-            if completion.choices[0].message.tool_calls:
-                # internal tool is called
-                fn_call = completion.choices[0].message.tool_calls[0].function
-                fn_name = fn_call.name
-                fn_args = fn_call.arguments
-                print(f'function name = {fn_name}')
-                print(f'function arguments = {fn_args}')
-            else:
-                raise Exception("No tool call executed by Operator, perhaps because of the 'auto' tool choice!")
+        if isinstance(self.client, Anthropic):
+            kwargs = {
+                "model": self.llm,
+                "max_tokens": _TOOL_CALL_MAX_TOKENS,
+                "messages": anthropic_messages,
+                "tools": anthropic_tools,
+                "tool_choice": anthropic_tool_choice,
+            }
+            if system_str:
+                kwargs["system"] = system_str
+            if _supports_temperature(self.llm):
+                kwargs["temperature"] = temperature
+
+            completion = self.client.messages.create(**kwargs)
+
+            tool_use_block = next((b for b in completion.content if b.type == "tool_use"), None)
+            if tool_use_block is None:
+                raise Exception("No tool call returned by the model.")
+            fn_name = tool_use_block.name
+            # Downstream code expects the OpenAI shape: a JSON string. Anthropic
+            # returns `.input` as an already-parsed dict, so re-serialize.
+            fn_args = json.dumps(tool_use_block.input)
+            print(f'function name = {fn_name}')
+            print(f'function arguments = {fn_args}')
         else:
             raise Exception("Client type not supported!")
         return fn_name, fn_args

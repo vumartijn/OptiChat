@@ -9,14 +9,14 @@ from extractor import (get_files, get_files_generator, initial_loading, update_m
 from internal_tools import feasibility_restoration, sensitivity_analysis, components_retrival, evaluate_modification
 from utils import get_agents, OptiChat_workflow_exp
 from pyomo.opt import TerminationCondition
-from openai import OpenAI
+from anthropic import Anthropic
 
 
 class Args:
     def __init__(self,
                  exps_id,
                  folder_name,
-                 gpt_model,
+                 claude_model,
                  temperature,
                  json_mode,
                  skip_syntax,
@@ -28,7 +28,7 @@ class Args:
                  ):
         self.exps_id = exps_id
         self.folder_name = folder_name
-        self.gpt_model = gpt_model
+        self.claude_model = claude_model
         self.temperature = temperature
         self.json_mode = json_mode
         self.skip_syntax = skip_syntax
@@ -46,7 +46,7 @@ class Args:
         return ', '.join(f'{k}={v}' for k, v in self.__dict__.items())
 
 
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+client = Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
 
 
 def run_interpretation_experiment(args):
@@ -55,7 +55,7 @@ def run_interpretation_experiment(args):
     save the model_json so that internal and external experiments can load the descriptions directly
     """
     stats = {}
-    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.gpt_model)
+    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.claude_model)
     files_generator = get_files_generator(args.folder_name)
     files_with_error = {}
     for file in files_generator:
@@ -126,7 +126,7 @@ def run_interpretation_experiment(args):
 
 def run_internal_experiment(args):
     stats = {}
-    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.gpt_model)
+    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.claude_model)
     files_generator = get_files_generator(args.folder_name)
     files_with_error = {}
 
@@ -223,7 +223,7 @@ def run_internal_ablation_experiment(args):
     args.external_experiment = True  # to start code generation
 
     stats = {}
-    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.gpt_model)
+    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.claude_model)
     files_generator = get_files_generator(args.folder_name)
     files_with_error = {}
 
@@ -325,7 +325,7 @@ def run_internal_ablation_experiment(args):
 def run_internal_wo_syntax_experiment(args):
     assert args.skip_syntax is True
     stats = {}
-    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.gpt_model)
+    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.claude_model)
     files_generator = get_files_generator(args.folder_name)
     files_with_error = {}
 
@@ -440,7 +440,7 @@ def run_internal_wo_description_experiment(args):
 
     assert args.skip_description is True
     stats = {}
-    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.gpt_model)
+    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.claude_model)
     files_generator = get_files_generator(args.folder_name)
     files_with_error = {}
 
@@ -539,7 +539,7 @@ def validate_internal_testset(args):
     args.internal_experiment = False
     args.external_experiment = True  # to start code generation
 
-    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.gpt_model)
+    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.claude_model)
     files_generator = get_files_generator(args.folder_name)
 
     errors = []
@@ -596,7 +596,7 @@ def validate_internal_testset(args):
 
 def run_external_experiment(args):
     stats = {}
-    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.gpt_model)
+    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.claude_model)
     files_generator = get_files_generator(args.folder_name)
     files_with_error = {}
 
@@ -703,7 +703,7 @@ def run_external_wo_description_experiment(args):
 
     assert args.skip_description is True
     stats = {}
-    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.gpt_model)
+    interpreter, explainer, engineer, coordinator = get_agents(args.fn_names, client, args.claude_model)
     files_generator = get_files_generator(args.folder_name)
     files_with_error = {}
 
@@ -900,7 +900,7 @@ if __name__ == '__main__':
     skip_syntax = False
     skip_description = True
 
-    gpt_model = 'gpt-4.1'  # 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', "gpt-4.1", "o3"
+    claude_model = 'claude-haiku-4-5'  # 'claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7'
     temperature = 0  # temperature for the model
 
     if sum([interpreter_experiment, internal_experiment, external_experiment]) > 1:
@@ -919,7 +919,7 @@ if __name__ == '__main__':
 
     args = Args(exps_id=exps_id,
                 folder_name=folder_name,
-                gpt_model=gpt_model,
+                claude_model=claude_model,
                 temperature=temperature,
                 json_mode=json_mode,
                 skip_syntax=skip_syntax,

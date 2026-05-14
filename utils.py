@@ -14,8 +14,8 @@ from pyomo.opt import SolverFactory
 from pyomo.contrib.iis import *
 import re
 from pyomo.core.expr.visitor import identify_mutable_parameters, replace_expressions, clone_expression
-# GPT
-from openai import OpenAI
+# Claude
+from anthropic import Anthropic
 from dotenv import load_dotenv, find_dotenv
 _ = load_dotenv(find_dotenv())  # read local .env file
 import tiktoken
@@ -25,7 +25,7 @@ from prompts import get_prompts, get_tools, get_syntax_guidance_tool
 from agents import Interpreter, Coordinator, Explainer, Engineer
 
 
-def get_agents(fn_names, client, llm='gpt-4-turbo-preview'):
+def get_agents(fn_names, client, llm='claude-haiku-4-5'):
     interpreter = Interpreter(client=client, llm=llm)
     explainer = Explainer(client=client, llm=llm)
 

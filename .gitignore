@@ -22,6 +22,9 @@ build/
 env/
 venv/
 ENV/
+.env
+
+
 
 # IDEs
 .vscode/

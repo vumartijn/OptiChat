@@ -1,5 +1,5 @@
 # OptiChat
-Welcome to the [OptiChat](https://arxiv.org/abs/2501.08406) page. OptiChat is an interactive dialogue system powered by GPT4 LLM, augmented by Gurobi, Pyomo, predefined functions, and code generation, and aimed at helping practitioners interact with optimization models using natural language.
+Welcome to the [OptiChat](https://arxiv.org/abs/2501.08406) page. OptiChat is an interactive dialogue system powered by Anthropic's Claude LLM, augmented by Gurobi, Pyomo, predefined functions, and code generation, and aimed at helping practitioners interact with optimization models using natural language.
 
 We aspire for this project to provide some valuable insights into **explaining optimization models using LLMs**, thereby bridging the gap between practitioners and optimization models 🚀. 
 
@@ -36,8 +36,8 @@ Query: OptiChat supports diagnosing, retrieval, sensitivity, what-if and why-not
 2. Install python packages ```pip install -r requirements.txt```
 3. Install Gurobi following the instructions in the youtube videos  [here](https://support.gurobi.com/hc/en-us/articles/4534161999889). For windows without admin access, follow the instructions
 [here](https://support.gurobi.com/hc/en-us/articles/360060996432-How-do-I-install-Gurobi-on-Windows-without-administrator-credentials-)
-4. Apply for an OpenAI API key [here](https://platform.openai.com/).  Add the key to your environment variables as ```OPENAI_API_KEY```
-5. To check whether the installation of gurobi and GPT is successful, at the root directory, run ```pytest tests/```. If the test passes, you are good to go
+4. Apply for an Anthropic API key [here](https://console.anthropic.com/).  Add the key to your environment variables as ```CLAUDE_API_KEY``` (a `.env` file in the project root works too).
+5. To check whether the installation of gurobi and Claude is successful, at the root directory, run ```pytest tests/```. If the test passes, you are good to go
 6. Run app.py ```streamlit run app.py``` to use the chatbot
 
 # Tutorial
@@ -76,7 +76,7 @@ The model libary is located in the **Feas** and **Infeas** folders.
 <a name="build-your-own-model-and-test-it"></a>
 At the current stage, OptiChat only supports optimization models written in Pyomo. A typical Pyomo model example is given as follows. 
 
-**Please remember to set parameters "mutable=True" unless you are entirely certain that a parameter cannot be altered in any manner (eg. task duration in scheduling). This is because pyomo only has the mutable parameters in symbolic form, which is essential for GPT to work well.** 
+**Please remember to set parameters "mutable=True" unless you are entirely certain that a parameter cannot be altered in any manner (eg. task duration in scheduling). This is because pyomo only has the mutable parameters in symbolic form, which is essential for Claude to work well.** 
 
 When developing optimization models, consider adding comments using the "doc",
 e.g., model.rho = Param(initialize=8, mutable=True, doc="Worker productivity (units per worker)").
