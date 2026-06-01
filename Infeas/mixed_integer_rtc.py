@@ -1,8 +1,5 @@
 from pyomo.environ import *
-import random
 
-SEED = 42
-random.seed(SEED)
 
 # Create a model
 model = ConcreteModel(name="MixedIntegerRTC")
@@ -25,8 +22,8 @@ w = 3.0      # [m]  orifice width
 d = 0.8      # [m]  orifice height
 C = 1.0      # [-]  orifice discharge coefficient
 g = 9.8      # [m/s²] gravitational acceleration
-H_initial = 0.4 + random.uniform(0, 0.2)   # [m] initial storage level (= 400000 m³ / 1e6 m²)
-Q_pump_max   = 3.0 - random.uniform(0, 2)   # [m³/s]
+H_initial = 0.4       # [m] initial storage level (= 400000 m³ / 1e6 m²)
+Q_pump_max   = 2.0    # [m³/s]
 Q_orifice_max = 10.0  # [m³/s]
 K_squared = (w * C * d) ** 2
 
