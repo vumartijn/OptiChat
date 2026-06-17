@@ -256,12 +256,19 @@ if prompt := st.chat_input("Enter your query here..."):
                                                                 st.session_state.models_dict)
     print('OptiChat_out:', updated_messages)
     st.session_state.messages = updated_messages
+    st.session_state.team_conversation = team_conversation
 
-    # # update detailed chat history
-    # st.session_state.chat_history.append("user: " + prompt)
-    # st.session_state.chat_history.append("assistant: " + OptiChat_out)
+    # the assistant's reply is the last message returned by the workflow
+    OptiChat_out = updated_messages[-1]["content"]
 
-    # st.session_state.detailed_chat_history.append("user: " + prompt)
-    # for message in st.session_state.team_conversation:
-    #     st.session_state.detailed_chat_history.append(f"***{message['agent_name']}***: {message['agent_response']}")
-    # st.session_state.detailed_chat_history.append("assistant: " + OptiChat_out)
+    # update detailed chat history
+    st.session_state.chat_history.append("user: " + prompt)
+    st.session_state.chat_history.append("assistant: " + OptiChat_out)
+
+    st.session_state.detailed_chat_history.append("user: " + prompt)
+    for message in team_conversation:
+        st.session_state.detailed_chat_history.append(f"***{message['agent_name']}***: {message['agent_response']}")
+    st.session_state.detailed_chat_history.append("assistant: " + OptiChat_out)
+
+    # rerun so the sidebar export buttons pick up this turn immediately
+    st.rerun()

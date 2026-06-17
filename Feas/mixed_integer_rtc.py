@@ -47,8 +47,8 @@ model.Q_in  = Param(model.T, initialize=Q_in_data,  mutable=True,
 # =========================================================================
 # Variables
 # =========================================================================
-model.H_storage  = Var(model.T, bounds=(0.0, H_initial + 0.1), initialize=H_initial,
-                       doc='Canal/storage water level [m]')
+model.H_storage  = Var(model.T, bounds=(0.0, 0.5), initialize=H_initial,
+                       doc='Storage water level [m]')
 model.Q_pump     = Var(model.T, bounds=(0.0, Q_pump_max), initialize=0.0,
                        doc='Pump discharge rate [m³/s]')
 model.Q_orifice  = Var(model.T, bounds=(0.0, Q_orifice_max), initialize=0.0,
