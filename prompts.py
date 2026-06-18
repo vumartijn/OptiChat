@@ -1,24 +1,27 @@
 feasibility_restoration_fn_description = """
 Use when: The model is infeasible and you need to find out the minimal change to specific [component name] for restoring feasibility.
 Example: “How much should we adjust the [component name] to make the model feasible”
-Example: "I believe changing [component name] is practical, by how much do I need to change in order to make the model feasible"
+Example: "By how much would we need to raise the maximum storage capacity to make the model feasible"
+Example: "I believe increasing the maximum pump discharge is practical, by how much do I need to change it in order to make the model feasible"
 """
 components_retrival_fn_description = """
 Use when: You need to know the current values or expressions of [component name] within the model.
 Example: “What are the values of the [component name]”
-Example: "How many [component name] are currently available"
+Example: "What is the maximum water level the basin can hold" (retrieving a parameter, e.g. the maximum storage level)
+Example: "How much water is pumped in total in the current optimal solution" (retrieving a variable, e.g. the pump discharge)
+Example: "At which time steps does the pump run, and what is the discharge at each hour" (retrieving a time-indexed variable)
 """
 sensitivity_analysis_fn_description = """
 Use when: The model is feasible and you want to understand the impact of changing [component name] on the optimal objective value, **without specifying the extent of changes**.
-Example: “How will the optimal profit change with the change in the [component name]” (didn't specify how much the change is)
-Example: "How stable is the objective value in response to variations in the [component name]" (didn't specify how much the change is)
-Example: "Will the optimal value be greatly affected if we have more [component name]" (didn't specify how much the change is)
+Example: “How will the total pumped volume change with the change in the [component name]” (didn't specify how much the change is)
+Example: "How sensitive is the total pumping to the maximum pump capacity" (didn't specify how much the change is)
+Example: "Will the optimal value be greatly affected if we have more inflow from the hinterland" (didn't specify how much the change is)
 """
 evaluate_modification_fn_description = """
 Use when: The model is feasible and you want to understand the impact of changing [component name] on the optimal objective value, **by specifying the extent of changes**.
-Example: “How will the optimal profit change with **a 10% increase** in the [component name]” (specified the change is **a 10% increase**)
-Example: "How stable is the objective value in response to the modification that [component name] is **decreased by 20 units**" (specified the change is **decreased by 20 units**)
-Example: "Will the optimal value be greatly affected if we have **two more** [component name]" (specified the change is **two more**)
+Example: “How will the total pumped volume change with **a 10% increase** in the [component name]” (specified the change is **a 10% increase**)
+Example: "If the maximum storage level were **raised to 0.6 m**, how much less would the model pump" (specified the change is **raised to 0.6 m**)
+Example: "Would the need to pump be removed if the initial storage level were **set to 0.3 m**" (specified the change is **set to 0.3 m**)
 """
 
 
@@ -186,33 +189,36 @@ you MUST select a function from ```{function_names}```, DO NOT make up your own 
 1. feasibility_restoration:
 Use when: The model is infeasible and you need to find out the minimal change to specific [component name] for restoring feasibility.
 Example: “How much should we adjust the [component name] to make the model feasible”
-Example: "I believe changing [component name] is practical, by how much do I need to change in order to make the model feasible"
+Example: "By how much would we need to raise the maximum storage capacity to make the model feasible"
+Example: "I believe increasing the maximum pump discharge is practical, by how much do I need to change it in order to make the model feasible"
 [component name] category: parameters. If only constraint name is provided in the query, you need to infer the parameters involved in the constraint.
 
 2. components_retrival:
 Use when: You need to know the current values or expressions of [component name] within the model.
 Example: “What are the values of the [component name]”
-Example: "How many [component name] are currently available"
+Example: "What is the maximum water level the basin can hold" (retrieving a parameter, e.g. the maximum storage level)
+Example: "How much water is pumped in total in the current optimal solution" (retrieving a variable, e.g. the pump discharge)
+Example: "At which time steps does the pump run, and what is the discharge at each hour" (retrieving a time-indexed variable)
 [component name] category: sets, parameters, variables, constraints, or objectives.
 
 3. sensitivity_analysis:
 Use when: The model is feasible and you want to understand the impact of changing [component name] on the optimal objective value, **without specifying the extent of changes**.
-Example: “How will the optimal profit change with the change in the [component name]” (didn't specify how much the change is)
-Example: "How stable is the objective value in response to variations in the [component name]" (didn't specify how much the change is)
-Example: "Will the optimal value be greatly affected if we have more [component name]" (didn't specify how much the change is)
+Example: “How will the total pumped volume change with the change in the [component name]” (didn't specify how much the change is)
+Example: "How sensitive is the total pumping to the maximum pump capacity" (didn't specify how much the change is)
+Example: "Will the optimal value be greatly affected if we have more inflow from the hinterland" (didn't specify how much the change is)
 [component name] category: parameters.
 
 4. evaluate_modification:
 Use when: The model is feasible and you want to understand the impact of changing [component name] on the optimal objective value, **by specifying the extent of changes**.
-Example: “How will the optimal profit change with **a 10% increase** in the [component name]” (specified the change is **a 10% increase**)
-Example: "How stable is the objective value in response to the modification that [component name] is **decreased by 20 units**" (specified the change is **decreased by 20 units**)
-Example: "Will the optimal value be greatly affected if we have **two more** [component name]" (specified the change is **two more**)
+Example: “How will the total pumped volume change with **a 10% increase** in the [component name]” (specified the change is **a 10% increase**)
+Example: "If the maximum storage level were **raised to 0.6 m**, how much less would the model pump" (specified the change is **raised to 0.6 m**)
+Example: "Would the need to pump be removed if the initial storage level were **set to 0.3 m**" (specified the change is **set to 0.3 m**)
 [component name] category: parameters or variables.
 
 5. external_tools:
-Use when: User doubts the model's optimal solution and provides a counterexample, and you want to add new constraints to implement the counterexample.
-Example: “Why is it not recommended to have [component name] lower than 400 in the optimal solution”
-Example: "Why isn’t [component name] and [component name] both used in the optimal scenario"
+Use when: User doubts the model's optimal solution and provides a counterexample, or asks an open-ended what-if/why-not question that requires adding new constraints and re-solving (rather than just changing a parameter value).
+Example: “Why is it not recommended to keep the storage level below 0.3 m in the optimal solution”
+Example: "Is it possible to get a similar solution by pumping more evenly across the time steps instead of in concentrated pulses"
 [component name] category: parameters or variables.
     
 ----- Instruction to determine the correct component name -----

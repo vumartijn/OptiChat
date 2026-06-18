@@ -721,7 +721,8 @@ class Engineer(Agent):
     def tool_call_exp(self, prompt: Optional[str] = None, messages: Optional[List] = None,
                       seed: int = 10, temperature: float = 0.1,
                       is_syntax_guidance: bool = False,
-                      syntax_mode: str = 'none'):
+                      syntax_mode: str = 'none',
+                      forced_function: Optional[str] = None):
 
         # make sure exactly one of prompt or messages is provided
         assert (prompt is None) != (messages is None)
@@ -753,7 +754,14 @@ class Engineer(Agent):
                 tools = self.all_tools
             else:
                 raise Exception("Invalid mode!")
-            tool_choice = "required"
+            # If the syntax step already selected a function, force the Operator to
+            # call exactly that one instead of letting it re-decide (and possibly
+            # pick a function that was filtered out, e.g. sensitivity_analysis on a
+            # non-LP model).
+            if forced_function is not None:
+                tool_choice = {"type": "function", "function": {"name": forced_function}}
+            else:
+                tool_choice = "required"
 
         anthropic_tools = _convert_tools_to_anthropic(tools)
         anthropic_tool_choice = _convert_tool_choice_to_anthropic(tool_choice)
@@ -828,6 +836,9 @@ class Engineer(Agent):
                     return "LLM failed", "none"
 
     def generate_feedback_exp(self, args, messages, team_conversation, models_dict, syntax_mode):
+        # the function chosen by the syntax step; force the Operator to call this
+        # exact function rather than letting it re-decide
+        forced_function = self.queried_function
         while not self.operator_success and self.operator_cnt > 0:
             prompt = self.operator_prompt_template  # nothing to format here
             pseudo_messages = self.generate_pseudo_messages(messages, team_conversation, prompt)
@@ -837,7 +848,8 @@ class Engineer(Agent):
                 fn_name, fn_args = self.tool_call_exp(messages=pseudo_messages,
                                                       seed=self.operator_cnt, temperature=args.temperature,
                                                       is_syntax_guidance=False,
-                                                      syntax_mode=syntax_mode)
+                                                      syntax_mode=syntax_mode,
+                                                      forced_function=forced_function)
                 syntax_end = time.time()
                 self.syntax_time += (syntax_end - syntax_start)
 
@@ -857,6 +869,18 @@ class Engineer(Agent):
                     fn_output = evaluate_modification(self.queried_components, self.queried_model, models_dict)
                 else:
                     raise Exception("invalid function name")
+                # Some predefined functions return a soft "Error:" string when they
+                # cannot handle the query (e.g. an open-ended what-if with no specific
+                # modification extent, or sensitivity_analysis on a non-LP model).
+                # Rather than reporting a dead-end, mark the operator as unsuccessful so
+                # the workflow falls back to the code-generation path, which can add
+                # constraints and re-solve to actually answer / make suggestions.
+                # Note: these strings may be wrapped in a "Feedback from internal tools:"
+                # prefix, so strip that before checking.
+                if isinstance(fn_output, str) and \
+                        fn_output.replace("Feedback from internal tools:", "").lstrip().startswith("Error:"):
+                    self.operator_success = False
+                    return fn_output
                 self.operator_success = True
                 return fn_output
 

@@ -22,8 +22,6 @@ w = 3.0      # [m]  orifice width
 d = 0.8      # [m]  orifice height
 C = 1.0      # [-]  orifice discharge coefficient
 g = 9.8      # [m/s²] gravitational acceleration
-H_initial = 0.4       # [m] initial storage level (= 400000 m³ / 1e6 m²)
-Q_pump_max   = 7.0    # [m³/s]
 Q_orifice_max = 10.0  # [m³/s]
 K_squared = (w * C * d) ** 2
 
@@ -43,13 +41,19 @@ model.H_sea = Param(model.T, initialize=H_sea_data, mutable=True,
                     doc='Sea water level at each time step [m]')
 model.Q_in  = Param(model.T, initialize=Q_in_data,  mutable=True,
                     doc='Inflow discharge from hinterland at each time step [m³/s]')
+model.H_initial     = Param(initialize=0.4, mutable=True,
+                            doc='Initial storage level [m]')
+model.H_storage_max = Param(initialize=0.5, mutable=True,
+                            doc='Maximum allowed storage level (basin capacity limit) [m]')
+model.Q_pump_max    = Param(initialize=7.0, mutable=True,
+                            doc='Maximum pump discharge rate [m³/s]')
 
 # =========================================================================
 # Variables
 # =========================================================================
-model.H_storage  = Var(model.T, bounds=(0.0, 0.5), initialize=H_initial,
+model.H_storage  = Var(model.T, bounds=(0.0, None), initialize=value(model.H_initial),
                        doc='Storage water level [m]')
-model.Q_pump     = Var(model.T, bounds=(0.0, Q_pump_max), initialize=0.0,
+model.Q_pump     = Var(model.T, bounds=(0.0, None), initialize=0.0,
                        doc='Pump discharge rate [m³/s]')
 model.Q_orifice  = Var(model.T, bounds=(0.0, Q_orifice_max), initialize=0.0,
                        doc='Orifice (gravity) discharge rate [m³/s]')
@@ -62,8 +66,14 @@ model.is_downhill = Var(model.T, domain=Binary, initialize=0,
 
 # Initial water level
 model.initial_condition = Constraint(
-    expr=model.H_storage[0] == H_initial,
+    expr=model.H_storage[0] == model.H_initial,
     doc='Fix storage level at t=0 to initial state')
+
+# Basin capacity: enforce H_storage_max as a mutable upper bound via constraint
+def storage_upper_bound_rule(model, t):
+    return model.H_storage[t] <= model.H_storage_max
+model.storage_upper_bound = Constraint(model.T, rule=storage_upper_bound_rule,
+                                       doc='Storage level cannot exceed basin capacity limit [m]')
 
 # Mass balance: A*(H[t] - H[t-1]) = dt*(Q_in[t-1] - Q_pump[t-1] - Q_orifice[t-1])
 def mass_balance_rule(model, t):
@@ -73,6 +83,12 @@ def mass_balance_rule(model, t):
     )
 model.mass_balance = Constraint(model.T_interior, rule=mass_balance_rule,
                                 doc='Water volume continuity equation (forward Euler)')
+
+# Pump capacity: enforce Q_pump_max as a mutable upper bound via constraint
+def pump_capacity_rule(model, t):
+    return model.Q_pump[t] <= model.Q_pump_max
+model.pump_capacity = Constraint(model.T, rule=pump_capacity_rule,
+                                 doc='Pump discharge cannot exceed maximum pump capacity [m³/s]')
 
 # Orifice can only flow when is_downhill=1
 def orifice_downhill_only_rule(model, t):
