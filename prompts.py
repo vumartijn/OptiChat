@@ -334,16 +334,19 @@ Your task is to invoke the most appropriate tool correctly based on the user's q
 
     Here are some example questions and their answer codes:
     ----- EXAMPLE 1 -----
-    Question: Why is it not recommended to use just one supplier for roastery 2?
+    Question: Is it possible to get a similar solution by pumping less at the hours where the pump currently runs at or near full capacity?
 
     Answer Code:
 ```python
-# user is actually interested in the case that only one supplier can supply roastery 2 and does not believe the optimal solution.
-model.force_one_supplier = ConstraintList()
-model.force_one_supplier.add(sum(model.z[s,'roastery2'] for s in model.suppliers) <= 1)
-for s in model.suppliers:
-    model.force_one_supplier.add(model.x[s,'roastery2'] <= model.capacity_in_supplier[s] * model.z[s, 'roastery2'])
-    from pyomo.environ import SolverFactory, TerminationCondition
+# The user doubts that pumping must come in concentrated pulses and wants to know
+# whether a flatter pump profile can still manage the basin. Rather than hard-coding
+# a numeric cap, we tie the limit to the model's own maximum pump capacity and lower
+# it a bit (here to 90%), so only the hours that currently pump near full capacity
+# are pulled down, pushing the schedule to spread the load. Then we re-solve to see
+# whether it stays feasible and how the total pumped volume changes.
+model.even_pumping = ConstraintList()
+for t in model.T:
+    model.even_pumping.add(model.Q_pump[t] <= 0.9 * model.Q_pump_max)
     
 # standard code to solve the model. Don't change this code if you need to solve a mode.
 solver = SolverFactory('gurobi')  # only gurobi is available in env
@@ -360,19 +363,23 @@ if results.solver.termination_condition == TerminationCondition.optimal:
 else:
     print("Model is infeasible or unbounded, no optimal objective value is available.")
     
-# I print out the new optimal objective value so that you can tell the user how the objective value changes if only one supplier supplies roastery 2.
-print('If forcing only one supplier to supply roastery 2, the optimal objective value will become: ', model.obj())
+# I print out the new optimal objective value so that you can tell the user how the total pumped volume changes if the pump profile is forced to be flatter.
+print('If every hour is capped at 90% of the maximum pump capacity, the optimal total pumped volume becomes: ', model.obj())
 ```
 
     ----- EXAMPLE 2 -----
-    Question: Why is it not recommended to have production cost larger than transportation cost in the optimal setting?
+    Question: Is it possible to achieve the same objective value by pumping more evenly across the time steps instead of in concentrated pulses?
 
     Answer Code:
 ```python
-# user does not believe the optimal solution obtained when production cost smaller than transportation cost.
-# so we force production cost to be less than transportation cost to see what will happen.
-model.counter_example = ConstraintList()
-model.counter_example.add(model.production <= model.transportation)
+# The user wants to know whether the same objective can be reached with a smoother
+# pump schedule. We limit how much the pump discharge can change between consecutive
+# hours to at most 3 m3/s. Because |a - b| <= c is not solver-friendly directly, we
+# encode |Q_pump[t] - Q_pump[t-1]| <= 3 with two linear constraints per step.
+model.smooth_pumping = ConstraintList()
+for t in model.T_interior:
+    model.smooth_pumping.add(model.Q_pump[t] - model.Q_pump[t-1] <= 3)
+    model.smooth_pumping.add(model.Q_pump[t-1] - model.Q_pump[t] <= 3)
     
 # standard code to solve the model. Don't change this code if you need to solve a mode.
 solver = SolverFactory('gurobi')  # only gurobi is available in env
@@ -389,8 +396,8 @@ if results.solver.termination_condition == TerminationCondition.optimal:
 else:
     print("Model is infeasible or unbounded, no optimal objective value is available.")
     
-# I print out the new optimal objective value so that you can tell the user how the objective value changes.
-print('If forcing production cost be smaller than transportation cost, the optimal objective value will become: ', model.obj())
+# I print out the new optimal objective value so that you can tell the user how the total pumped volume changes when the pump schedule is forced to be smooth.
+print('If pump discharge cannot change by more than 3 m3/s between consecutive hours, the optimal total pumped volume becomes: ', model.obj())
 ```
     
     - Code reminder has provided you with the source code of the pyomo model
