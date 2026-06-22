@@ -372,14 +372,13 @@ print('If every hour is capped at 90% of the maximum pump capacity, the optimal 
 
     Answer Code:
 ```python
-# The user wants to know whether the same objective can be reached with a smoother
-# pump schedule. We limit how much the pump discharge can change between consecutive
-# hours to at most 3 m3/s. Because |a - b| <= c is not solver-friendly directly, we
-# encode |Q_pump[t] - Q_pump[t-1]| <= 3 with two linear constraints per step.
+# The user wants to know whether the same objective can be reached with a smoother pump
+# schedule. We limit how much the pump discharge can change between consecutive hours to at 
+# most x m3/s. We encode |Q_pump[t] - Q_pump[t-1]| <= x with two linear constraints per step.
 model.smooth_pumping = ConstraintList()
 for t in model.T_interior:
-    model.smooth_pumping.add(model.Q_pump[t] - model.Q_pump[t-1] <= 3)
-    model.smooth_pumping.add(model.Q_pump[t-1] - model.Q_pump[t] <= 3)
+    model.smooth_pumping.add(model.Q_pump[t] - model.Q_pump[t-1] <= x)
+    model.smooth_pumping.add(model.Q_pump[t-1] - model.Q_pump[t] <= x)
     
 # standard code to solve the model. Don't change this code if you need to solve a mode.
 solver = SolverFactory('gurobi')  # only gurobi is available in env
@@ -397,7 +396,7 @@ else:
     print("Model is infeasible or unbounded, no optimal objective value is available.")
     
 # I print out the new optimal objective value so that you can tell the user how the total pumped volume changes when the pump schedule is forced to be smooth.
-print('If pump discharge cannot change by more than 3 m3/s between consecutive hours, the optimal total pumped volume becomes: ', model.obj())
+print('If pump discharge cannot change by more than x m3/s between consecutive hours, the optimal total pumped volume becomes: ', model.obj())
 ```
     
     - Code reminder has provided you with the source code of the pyomo model
