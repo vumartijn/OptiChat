@@ -11,8 +11,8 @@ For each of NUM_SESSIONS conversations this script:
   4. Writes that conversation's chat_history to the "Allesbehalve code" folder.
 
 Run it from the OptiChat directory:
-    cd /Users/martijnkrikke/Documents/Scriptie/OptiChat
-    python auto_sessions.py
+cd /Users/martijnkrikke/Documents/Scriptie/OptiChat
+python auto_sessions.py
 
 It reuses the same building blocks as app.py / run_exp.py (no Streamlit needed,
 because all the *_stream flags are False).
@@ -39,13 +39,13 @@ OPTICHAT_MODEL = "v1"
 
 MODEL_PATH = "Feas/mixed_integer_rtc.py"
 
-OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/chats{OPTICHAT_MODEL}"
+OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/chats/{OPTICHAT_MODEL}"
 
 NUM_SESSIONS = 5
 
 CLAUDE_MODEL = "claude-haiku-4-5"
 
-
+TEMPERATURE = 0.1
 
 # Questions 1-5 are asked together in a single batch turn.
 BATCH_QUESTIONS = [
