@@ -113,6 +113,7 @@ The json representation is given below:
 - Explain what data or information (parameters) is already known, and include physical units where available.
 - Explain what constraints are imposed on the decisions. Describe Big-M or logical constraints as physical operating rules (e.g., "gravity drainage can only occur when the storage level is above the sea level"), not as mathematical inequalities.
 - Explain what the objective is, what is being optimized, and what it means in practice (e.g., minimizing total pumping volume reduces energy cost and wear on pumps).
+- Describe the model's STRUCTURE only. Do NOT fabricate specific solution numbers: if an optimal solution is explicitly provided to you, you may state its objective value, but never invent a per-time-step schedule, a pumping total, or any other result that was not given to you.
 
 The explanation must be coherent and easy to understand for water management operators and hydraulic engineers who are domain experts but not experts in optimization.
 """
@@ -167,9 +168,12 @@ to identify the next agent to work on the problem, and also the task it has to c
     explainer_prompt = """
 You're a water management expert (hydraulic engineer / polder management specialist) who helps your team answer user queries in MARKDOWN format.
 
-- The users are water management operators or hydraulic engineers — domain experts who understand concepts like water levels, pump discharge, gravity flow, tidal cycles, and storage capacity, but who are not experts in optimization.
+- The users are water management operators and hydraulic engineers — domain experts who understand water levels, pump discharge, gravity flow, tidal cycles, and storage capacity, but who are not experts in optimization.
 - Translate optimization results into operational terms: water levels in [m], pump discharge rates in [m³/s], pump on/off schedules, gravity-flow windows based on tidal conditions, etc.
-- When describing time-indexed results, refer to specific time steps in practical terms (e.g., "at hour 5 of the planning horizon", "during the high-tide window between hours 8–12").
+- CRITICAL — NEVER fabricate numbers. Report time-indexed results (the hourly pump schedule, storage levels, gravity flow, etc.) using ONLY the exact values your team retrieved with the internal tools. Do NOT invent, interpolate, round into ranges, or "tidy up" a schedule. Real solver output is usually irregular (e.g., 5.59, 0, 7.0, 1.53, ...); never reshape it into a clean ramp, a symmetric triangle, or a flat line to fit a tidal story. If a value was not actually retrieved, say it still needs to be retrieved instead of guessing it.
+- Any per-hour schedule you present MUST reconcile with the reported total/objective value: the hourly discharges times the time step must add up to the total pumped volume. If they do not add up, the schedule is wrong — re-check the retrieved values rather than presenting an invented schedule.
+- When a what-if (e.g., "can I get a similar solution by pumping more evenly?") was tested by re-solving the model, base your conclusion on the recomputed objective value the team reports, NOT on physical intuition. If the re-solve stayed feasible and its objective is within a few percent of the original, the correct answer is that the alternative IS achievable at little or no extra cost — state this plainly, even if it feels counterintuitive. Only answer "no / impossible" if the re-solve actually returned infeasible or a substantially worse objective.
+- When describing time-indexed results you may refer to time steps in practical terms (e.g., "at hour 5", "during the high-tide window"), but the narrative must FOLLOW the data — never let the story override or replace the retrieved numbers.
 - Binary variables represent discrete operational decisions (e.g., pump on/off, gate open/closed, gravity flow active/inactive) — explain them as such, not as mathematical integers.
 - Provide a detailed explanation only when you believe the users need more context about optimization to understand your explanation.
 - Otherwise, the explanation must be succinct and concise, because users may be distracted by too much information.
@@ -339,32 +343,37 @@ Your task is to invoke the most appropriate tool correctly based on the user's q
     Answer Code:
 ```python
 # The user doubts that pumping must come in concentrated pulses and wants to know
-# whether a flatter pump profile can still manage the basin. Rather than hard-coding
-# a numeric cap, we tie the limit to the model's own maximum pump capacity and lower
-# it a bit (here to 90%), so only the hours that currently pump near full capacity
-# are pulled down, pushing the schedule to spread the load. Then we re-solve to see
-# whether it stays feasible and how the total pumped volume changes.
-model.even_pumping = ConstraintList()
-for t in model.T:
-    model.even_pumping.add(model.Q_pump[t] <= 0.9 * model.Q_pump_max)
-    
-# standard code to solve the model. Don't change this code if you need to solve a mode.
+# whether a flatter pump profile can still manage the basin.
+# IMPORTANT: work on a CLONE of the model. The same solved model object is reused across
+# questions, so adding constraints to the original would silently corrupt every later answer.
+from pyomo.environ import ConstraintList, SolverFactory, TerminationCondition, Objective, value
+
+def total_pumped(mm):
+    # returns the objective value (total pumped volume) of a solved model
+    for _, o in mm.component_map(Objective).items():
+        return value(o)
+
+m = model.clone()
+# Cap every hour below the model's own maximum pump capacity so the near-full-capacity
+# hours are pulled down, forcing the schedule to spread the load across more hours.
+m.even_pumping = ConstraintList()
+for t in m.T:
+    m.even_pumping.add(m.Q_pump[t] <= 0.9 * value(m.Q_pump_max))
+
 solver = SolverFactory('gurobi')  # only gurobi is available in env
 solver.options['TimeLimit'] = 300  # 5min time limit
-results = solver.solve(model, tee=False)  # tee must be False to suppress solver output, otherwise the output is overwhelming
+results = solver.solve(m, tee=False)  # tee=False to suppress overwhelming solver output
 print("Solver Status: ", results.solver.status)
 print("Termination Condition: ", results.solver.termination_condition)
-# always check the termination condition and optimal objective value first
+# ALWAYS report BOTH objectives and their difference so the explainer can state the exact extra cost.
 if results.solver.termination_condition == TerminationCondition.optimal:
-    from pyomo.environ import Objective
-    from pyomo.environ import value
-    for obj_name, obj in model.component_map(Objective).items():
-        print('Optimal Objective Value: ', value(obj))
+    base = total_pumped(model)
+    new = total_pumped(m)
+    print('Original total pumped volume: ', base)
+    print('Total pumped volume with a flatter (capped) schedule: ', new)
+    print('Extra pumping needed to flatten the schedule: ', new - base)
 else:
-    print("Model is infeasible or unbounded, no optimal objective value is available.")
-    
-# I print out the new optimal objective value so that you can tell the user how the total pumped volume changes if the pump profile is forced to be flatter.
-print('If every hour is capped at 90% of the maximum pump capacity, the optimal total pumped volume becomes: ', model.obj())
+    print("Forcing a flatter schedule is infeasible under the current constraints.")
 ```
 
     ----- EXAMPLE 2 -----
@@ -372,38 +381,52 @@ print('If every hour is capped at 90% of the maximum pump capacity, the optimal 
 
     Answer Code:
 ```python
-# The user wants to know whether the same objective can be reached with a smoother pump
-# schedule. We limit how much the pump discharge can change between consecutive hours to at 
-# most x m3/s. We encode |Q_pump[t] - Q_pump[t-1]| <= x with two linear constraints per step.
-model.smooth_pumping = ConstraintList()
-for t in model.T_interior:
-    model.smooth_pumping.add(model.Q_pump[t] - model.Q_pump[t-1] <= x)
-    model.smooth_pumping.add(model.Q_pump[t-1] - model.Q_pump[t] <= x)
-    
-# standard code to solve the model. Don't change this code if you need to solve a mode.
+# The user wants to know whether a SMOOTHER schedule (small hour-to-hour changes) reaches
+# a similar total. We cap how much Q_pump may change between consecutive hours.
+# Work on a CLONE; iterate over the ordered time set and guard the first step so we never
+# reference a non-existent t-1. Do NOT rely on a 'T_interior' set or an undefined 'x'.
+from pyomo.environ import ConstraintList, SolverFactory, TerminationCondition, Objective, value
+
+def total_pumped(mm):
+    for _, o in mm.component_map(Objective).items():
+        return value(o)
+
+m = model.clone()
+ramp_limit = 1.0  # max change in pump discharge between consecutive hours [m3/s]; raise if infeasible
+times = list(m.T)
+m.smooth_pumping = ConstraintList()
+for i in range(1, len(times)):
+    t_prev, t = times[i - 1], times[i]
+    m.smooth_pumping.add(m.Q_pump[t] - m.Q_pump[t_prev] <= ramp_limit)
+    m.smooth_pumping.add(m.Q_pump[t_prev] - m.Q_pump[t] <= ramp_limit)
+
 solver = SolverFactory('gurobi')  # only gurobi is available in env
 solver.options['TimeLimit'] = 300  # 5min time limit
-results = solver.solve(model, tee=False)  # tee must be False to suppress solver output, otherwise the output is overwhelming
+results = solver.solve(m, tee=False)
 print("Solver Status: ", results.solver.status)
 print("Termination Condition: ", results.solver.termination_condition)
-# always check the termination condition and optimal objective value first
 if results.solver.termination_condition == TerminationCondition.optimal:
-    from pyomo.environ import Objective
-    from pyomo.environ import value
-    for obj_name, obj in model.component_map(Objective).items():
-        print('Optimal Objective Value: ', value(obj))
+    base = total_pumped(model)
+    new = total_pumped(m)
+    print('Original total pumped volume: ', base)
+    print('Total pumped volume with a smooth (ramp-limited) schedule: ', new)
+    print('Extra pumping needed to smooth the schedule: ', new - base)
 else:
-    print("Model is infeasible or unbounded, no optimal objective value is available.")
-    
-# I print out the new optimal objective value so that you can tell the user how the total pumped volume changes when the pump schedule is forced to be smooth.
-print('If pump discharge cannot change by more than x m3/s between consecutive hours, the optimal total pumped volume becomes: ', model.obj())
+    print('A ramp limit of', ramp_limit, 'm3/s is infeasible; try a larger ramp_limit.')
 ```
     
     - Code reminder has provided you with the source code of the pyomo model
     - Your written code will be added to the lines with substring: "# YOUR CODE GOES HERE"
     So, you don't need to repeat the source code that has already been provided by Code reminder.
-    - The standard code for re-solving the model has been given in the examples, 
+    - The standard code for re-solving the model has been given in the examples,
     So, you MUST use the standard code to re-solve the model to avoid undesired execution errors and long execution result.
+    - ALWAYS re-solve on a CLONE created with model.clone(). NEVER add constraints to, or otherwise mutate, the original solved model: the same model object is reused for later questions, and leftover constraints will silently corrupt those answers (this is the "model state became corrupted" failure).
+    - For any "can I get a similar / alternative solution" question, ALWAYS print BOTH the original objective and the new objective and their difference, so the explainer can report the exact extra cost instead of guessing. Use value(...) to read objective and parameter values (not a bare model.obj()), and import the Pyomo names you use at the top of your snippet.
+    - If the question asks whether a change can ELIMINATE something (e.g., "remove the need to pump") or asks for a threshold, do NOT test a single guessed value. Sweep a range, each time on a fresh clone, and report the value at which the objective reaches the target (e.g., the highest initial level that still gives zero pumping). For example:
+        for trial in [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40]:
+            m = model.clone()
+            m.H_initial = trial        # set the swept parameter (use the actual parameter name); re-solve and record total_pumped(m)
+      Then report the threshold and the trend across the sweep, not just one data point.
     - Your written code should be accompanied by comments to explain the purpose of the code.
     - Evaluator will execute the new code for you and read the execution result.
     So, you MUST print out the model information that you believe is necessary for the user's question.

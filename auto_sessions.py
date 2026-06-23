@@ -41,7 +41,7 @@ MODEL_PATH = "Feas/mixed_integer_rtc.py"
 
 OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/chats/{OPTICHAT_MODEL}"
 
-NUM_SESSIONS = 5
+NUM_SESSIONS = 3
 
 CLAUDE_MODEL = "claude-haiku-4-5"
 
@@ -59,11 +59,8 @@ BATCH_QUESTIONS = [
 # Questions 6-9 are asked one at a time, building on the conversation so far.
 SEQUENTIAL_QUESTIONS = [
     "Would starting at a lower initial level have removed the need to pump?",
-    "If the basin limit were raised to 0.6 m, how much less would the model pump?",
     "Is it possible to get a similar solution, by pumping less at hours where I "
     "now pump a lot, and pumping more at hours where I now pump little?",
-    "If I were to constrain the pump to never exceed 4 m³/s in any single hour "
-    "(reducing the peak pulses), how much would the total pumped volume increase?",
 ]
 
 
