@@ -4,6 +4,7 @@ from typing import Dict, Optional, Union, List
 from anthropic import Anthropic
 from prompts import get_prompts
 from internal_tools import feasibility_restoration, sensitivity_analysis, components_retrival, evaluate_modification
+from internal_tools import alternative_solutions
 from internal_tools import syntax_guidance, fnArgsDecoder
 from extractor import extract_component_descriptions, insert_code, run_with_exec
 import json
@@ -867,6 +868,8 @@ class Engineer(Agent):
                     fn_output = components_retrival(self.queried_components, self.queried_model, models_dict)
                 elif fn_name == 'evaluate_modification':
                     fn_output = evaluate_modification(self.queried_components, self.queried_model, models_dict)
+                elif fn_name == 'alternative_solutions':
+                    fn_output = alternative_solutions(self.queried_components, self.queried_model, models_dict)
                 else:
                     raise Exception("invalid function name")
                 # Some predefined functions return a soft "Error:" string when they

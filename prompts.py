@@ -23,6 +23,14 @@ Example: “How will the total pumped volume change with **a 10% increase** in t
 Example: "If the maximum storage level were **raised to 0.6 m**, how much less would the model pump" (specified the change is **raised to 0.6 m**)
 Example: "Would the need to pump be removed if the initial storage level were **set to 0.3 m**" (specified the change is **set to 0.3 m**)
 """
+alternative_solutions_fn_description = """
+Use when: The model is feasible/optimal and the user asks why the current solution is optimal, whether other solutions exist, or why other solutions are not better. This generates near-optimal alternative solutions (counterfactuals) with Gurobi's solution pool and contrasts them with the incumbent optimal solution.
+Example: “Why is this the optimal solution”
+Example: "Are there no other solutions that achieve a similar result"
+Example: "Why are other solutions not better than this one"
+Example: "Show me alternative pumping schedules and how much worse they are"
+[component name] category: variables (optional). Name the decision variables the user is interested in to focus the comparison; if none are given, all variables are compared.
+"""
 
 
 def get_prompts(prompt):
@@ -219,7 +227,15 @@ Example: "If the maximum storage level were **raised to 0.6 m**, how much less w
 Example: "Would the need to pump be removed if the initial storage level were **set to 0.3 m**" (specified the change is **set to 0.3 m**)
 [component name] category: parameters or variables.
 
-5. external_tools:
+5. alternative_solutions:
+Use when: The model is feasible/optimal and the user asks why the current solution is optimal, whether other (comparable) solutions exist, or why other solutions are not better. Generates near-optimal alternatives (counterfactuals) with Gurobi's solution pool and contrasts them with the incumbent optimal solution.
+Example: “Why is this the optimal solution”
+Example: "Are there no other solutions"
+Example: "Why are other solutions not better than this one"
+Example: "Show me alternative pumping schedules and how much worse they are"
+[component name] category: variables (optional). Name the decision variables to focus the comparison; if the user names none, leave queried_components empty and all variables are compared.
+
+6. external_tools:
 Use when: User doubts the model's optimal solution and provides a counterexample, or asks an open-ended what-if/why-not question that requires adding new constraints and re-solving (rather than just changing a parameter value).
 Example: “Why is it not recommended to keep the storage level below 0.3 m in the optimal solution”
 Example: "Is it possible to get a similar solution by pumping more evenly across the time steps instead of in concentrated pulses"
@@ -691,6 +707,8 @@ def old_get_fn_json(fn_name):
         fn_json_template["function"]["description"] += sensitivity_analysis_fn_description
     elif fn_name == "components_retrival":
         fn_json_template["function"]["description"] += components_retrival_fn_description
+    elif fn_name == "alternative_solutions":
+        fn_json_template["function"]["description"] += alternative_solutions_fn_description
     elif fn_name == "evaluate_modification":
         fn_delta_json_template["function"]["description"] += evaluate_modification_fn_description
         return fn_delta_json_template
@@ -1114,6 +1132,8 @@ def get_fn_json(fn_name, mode):
         fn_json_template["function"]["description"] += sensitivity_analysis_fn_description
     elif fn_name == "components_retrival":
         fn_json_template["function"]["description"] += components_retrival_fn_description
+    elif fn_name == "alternative_solutions":
+        fn_json_template["function"]["description"] += alternative_solutions_fn_description
     elif fn_name == "evaluate_modification":
         fn_delta_json_template["function"]["description"] += evaluate_modification_fn_description
         return fn_delta_json_template

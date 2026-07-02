@@ -40,7 +40,7 @@ class Args:
         self.illustration_stream = False
         self.inference_stream = False
         self.explanation_stream = False
-        self.fn_names = ["feasibility_restoration", "sensitivity_analysis", "components_retrival", "evaluate_modification", "external_tools"]
+        self.fn_names = ["feasibility_restoration", "sensitivity_analysis", "components_retrival", "evaluate_modification", "alternative_solutions", "external_tools"]
 
     def __str__(self):
         return ', '.join(f'{k}={v}' for k, v in self.__dict__.items())

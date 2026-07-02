@@ -55,6 +55,7 @@ st.session_state['fn_names'] = ["feasibility_restoration",
                                 "sensitivity_analysis",
                                 "components_retrival",
                                 "evaluate_modification",
+                                "alternative_solutions",
                                 "external_tools"]
 
 interpreter, explainer, engineer, coordinator = get_agents(st.session_state.fn_names,

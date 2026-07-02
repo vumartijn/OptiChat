@@ -99,7 +99,7 @@ def syntax_guidance(queried_function: str,
                     models_dict):
 
     FUNCTIONS = ['feasibility_restoration', 'sensitivity_analysis', 'components_retrival', 'evaluate_modification',
-                 'external_tools']
+                 'alternative_solutions', 'external_tools']
     assert queried_function in FUNCTIONS, f"Function {queried_function} is not recognized."
     if queried_function == 'external_tools':
         return "external_tools", "none"
@@ -225,7 +225,11 @@ Make sure the delta value is consistent with the positivity/negativity of the pa
     syntax_output = function_syntax + queried_model_syntax + queried_component_syntax + complex_syntax + supplementary
 
     syntax_mode = set(syntax_mode)
-    if len(syntax_mode) > 1:
+    if len(syntax_mode) == 0:
+        # No specific components queried (e.g. "why is this optimal") — nothing to
+        # index. alternative_solutions can run with an empty queried_components list.
+        syntax_mode = "none"
+    elif len(syntax_mode) > 1:
         syntax_mode = "all"
     else:
         syntax_mode = next(iter(syntax_mode))
@@ -754,5 +758,127 @@ def evaluate_modification(queried_components: List[Dict], queried_model, models_
         feedback = "Feedback from internal tools: \n" + feedback
 
     return feedback
+
+
+def alternative_solutions(queried_components: List[Dict], queried_model, models_dict,
+                          n_solutions: int = 5, pool_gap: Optional[float] = None,
+                          max_diffs_reported: int = 15, tol: float = 1e-5):
+    """Generate near-optimal alternative solutions (counterfactuals) with Gurobi's
+    solution pool, and contrast them with the incumbent optimal solution.
+
+    Answers questions such as "why is this optimal", "are there other solutions",
+    and "why are other solutions not better". The incumbent optimal solution is
+    referred to as P; each pooled alternative is a Q. For every Q we report its
+    objective value, the objective gap relative to P (the "price" of that
+    alternative), and the decision variables whose values differ from P.
+
+    queried_components (optional) focuses the comparison on the variables the user
+    named; if none of them are variables, all model variables are compared.
+    """
+    queried_model_dict = models_dict[queried_model]
+
+    if queried_model_dict['model status'] in [TerminationCondition.infeasible,
+                                              TerminationCondition.infeasibleOrUnbounded]:
+        feedback = ("Error: The model is infeasible, so there are no alternative solutions to compare. "
+                    "Alternative-solution analysis can only be performed on a feasible/optimal model.")
+        return "Feedback from internal tools: \n" + feedback
+
+    model = queried_model_dict['model class'].clone()
+
+    # Determine which variables to focus the counterfactual comparison on.
+    focus_var_names = []
+    for component in (queried_components or []):
+        name = component.get('component_name')
+        if name is not None and get_component_type(name, queried_model_dict) == 'variables':
+            focus_var_names.append(name)
+    focus_var_names = list(dict.fromkeys(focus_var_names))  # de-dup, keep order
+
+    # objective sense: 1 = minimize, -1 = maximize
+    obj = next(model.component_objects(pe.Objective, active=True))
+    sense = obj.sense
+    sense_word = "lower" if sense == pe.minimize else "higher"
+
+    # Solve with the Gurobi solution pool (mode 2 = the n best solutions).
+    try:
+        from gurobipy import GRB
+        opt = SolverFactory('gurobi_persistent')
+        opt.set_instance(model)
+        opt.set_gurobi_param('NonConvex', 2)
+        opt.set_gurobi_param('TimeLimit', 300)
+        opt.set_gurobi_param('PoolSearchMode', 2)          # find the n best solutions
+        opt.set_gurobi_param('PoolSolutions', int(n_solutions) + 1)  # +1 to include incumbent P
+        if pool_gap is not None:
+            opt.set_gurobi_param('PoolGap', float(pool_gap))  # only keep Q within pool_gap of P
+        results = opt.solve(tee=True)
+    except Exception as e:
+        feedback = (f"Error: Could not generate a solution pool with the Gurobi persistent interface ({e}). "
+                    f"This usually means 'gurobi_persistent' or gurobipy is unavailable.")
+        return "Feedback from internal tools: \n" + feedback
+
+    grb = opt._solver_model
+    sol_count = grb.SolCount
+
+    # Collect the (pyomo var, gurobi var) pairs we want to inspect.
+    var_map = opt._pyomo_var_to_solver_var_map
+    inspected = []  # list of (label, pyomo_vardata, gurobi_var)
+    for var in model.component_objects(pe.Var, active=True):
+        if focus_var_names and var.name not in focus_var_names:
+            continue
+        for idx in var:
+            vardata = var[idx]
+            gvar = var_map.get(id(vardata))
+            if gvar is None:
+                continue
+            label = var.name if idx is None else f"{var.name}[{idx}]"
+            inspected.append((label, vardata, gvar))
+
+    def read_pool_solution(i):
+        grb.setParam(GRB.Param.SolutionNumber, i)
+        values = {label: gvar.Xn for (label, _v, gvar) in inspected}
+        return grb.PoolObjVal, values
+
+    # Incumbent optimal solution P = pool solution 0.
+    obj_P, values_P = read_pool_solution(0)
+
+    focus_note = (f" (focusing on: {', '.join(focus_var_names)})" if focus_var_names else "")
+    feedback = (f"Solution-pool analysis of {queried_model}{focus_note}.\n"
+                f"The incumbent optimal solution is referred to as P, with objective value {obj_P}.\n")
+
+    if sol_count <= 1:
+        feedback += ("\nGurobi found no alternative solutions within the search settings: the optimal solution "
+                     "appears to be unique (or all alternatives are worse than the pool gap allows). "
+                     "This is itself the explanation of optimality — help the user understand that no other "
+                     "solution achieves the same objective.\n")
+        feedback += "\nPlease explain to the user why the optimal solution is effectively unique. \n"
+        return "Feedback from internal tools: \n" + feedback
+
+    feedback += (f"\nGurobi returned {sol_count - 1} alternative solution(s) (Q). For a minimization the "
+                 f"alternatives have a {sense_word if sense==pe.minimize else 'higher'} (worse) objective; "
+                 f"the gap is the price of choosing that alternative over P.\n")
+
+    for i in range(1, sol_count):
+        obj_Q, values_Q = read_pool_solution(i)
+        gap = obj_Q - obj_P  # for minimize, >= 0 (Q is worse); for maximize, <= 0
+        rel = (abs(gap) / abs(obj_P) * 100) if abs(obj_P) > tol else float('nan')
+        feedback += (f"\nAlternative Q{i}: objective = {obj_Q} "
+                     f"(worse than P by {abs(gap)}, i.e. {rel:.2f}% ).\n")
+
+        diffs = []
+        for label in values_P:
+            dP, dQ = values_P[label], values_Q[label]
+            if abs(dP - dQ) > tol:
+                diffs.append((abs(dP - dQ), label, dP, dQ))
+        diffs.sort(reverse=True)
+        if not diffs:
+            feedback += "  This alternative has the same variable values as P within tolerance.\n"
+        else:
+            feedback += f"  Decision differences vs P ({len(diffs)} variable(s) differ, showing up to {max_diffs_reported}):\n"
+            for _mag, label, dP, dQ in diffs[:max_diffs_reported]:
+                feedback += f"    - {label}: P = {dP}, Q{i} = {dQ}\n"
+
+    feedback += ("\nUse these counterfactuals to explain the optimality of P: for each alternative Q, state that "
+                 "it IS a valid alternative but is worse by the reported gap, and point to the specific decision "
+                 "changes that cause the worse objective. Frame it as 'P is better than Q because ...'. \n")
+    return "Feedback from internal tools: \n" + feedback
 
 
