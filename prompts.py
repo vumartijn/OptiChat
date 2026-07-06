@@ -1,3 +1,22 @@
+# ---------------------------------------------------------------------------
+# Interpretation style for the Interpreter agent (experiment switch):
+#   'baseline'   — original behavior: name + description only.
+#   'embedded'   — Variant A: adjustability (parameters) and hardness
+#                  (constraints) classifications appended INSIDE the
+#                  description text; no downstream code depends on it.
+#   'structured' — Variant B: separate machine-readable 'adjustability' and
+#                  'hardness' JSON keys next to a clean description
+#                  (doc-string descriptions are preserved in this mode).
+# The classification propagates automatically to the illustration, the IIS
+# inference, and the Engineer's syntax step via model_representation.
+# ---------------------------------------------------------------------------
+INTERPRETATION_STYLE = 'structured'
+
+
+def get_interpretation_style():
+    return INTERPRETATION_STYLE
+
+
 feasibility_restoration_fn_description = """
 Use when: The model is infeasible and you need to find out the minimal change to specific [component name] for restoring feasibility.
 Example: “How much should we adjust the [component name] to make the model feasible”
@@ -78,6 +97,44 @@ Here are the name of {component_type} that need to be described
         }
     }
 
+    # Variant B ('structured'): parameters and constraints carry machine-readable
+    # classification keys next to the plain-English description.
+    if INTERPRETATION_STYLE == 'structured':
+        model_interpretation_json["components"]["parameters"][0]["adjustability"] = \
+            "EXACTLY one of: operational | forecast | infrastructural | physical | artifact"
+        model_interpretation_json["components"]["constraints"][0]["hardness"] = \
+            "EXACTLY one of: physical-law | infrastructure-limit | operational-limit | policy-target | artifact-logic"
+
+    interpretation_taxonomy = """
+ADJUSTABILITY classes for parameters (how changeable the quantity is in the real world):
+* operational — changeable in day-to-day operation without physical works (e.g., target or limit water levels, pump setpoints, the planning horizon).
+* forecast — external input data the operator does not choose (e.g., hinterland inflow forecast, sea level / tide forecast, precipitation).
+* infrastructural — changeable only through physical works and capital investment (e.g., maximum pump discharge capacity, orifice or weir geometry).
+* physical — laws of nature or fixed geography that can never be changed (e.g., gravitational acceleration, water density, a storage area fixed by the landscape).
+* artifact — modeling constructs with no physical meaning (e.g., Big-M constants, penalty weights, numerical tolerances).
+
+HARDNESS classes for constraints (how breakable the requirement is in the real world):
+* physical-law — expresses physics such as mass balance or hydraulics; can never be violated.
+* infrastructure-limit — reflects the capacity of equipment or civil structures; can only be relaxed by physical works.
+* operational-limit — reflects an operating choice or safety margin; can be relaxed by an operator decision.
+* policy-target — a target or regulatory requirement; negotiable in exceptional situations.
+* artifact-logic — logical switching (Big-M) or bookkeeping constraints; 'violating' them has no physical meaning.
+"""
+
+    if INTERPRETATION_STYLE == 'embedded':
+        interpretation_classification_rules = """- For every parameter, END its description with an adjustability tag in exactly this format: "(adjustability: <class> — <very short reason>)", where <class> MUST be one of: operational, forecast, infrastructural, physical, artifact.
+- For every constraint, END its description with a hardness tag in exactly this format: "(hardness: <class> — <very short reason>)", where <class> MUST be one of: physical-law, infrastructure-limit, operational-limit, policy-target, artifact-logic.
+- Use 'name' and 'description' as the keys, and provide the name and description of the component as the values.
+""" + interpretation_taxonomy
+    elif INTERPRETATION_STYLE == 'structured':
+        interpretation_classification_rules = """- For every parameter, additionally fill in the 'adjustability' key with EXACTLY one of: operational, forecast, infrastructural, physical, artifact. Keep the description itself free of this classification.
+- For every constraint, additionally fill in the 'hardness' key with EXACTLY one of: physical-law, infrastructure-limit, operational-limit, policy-target, artifact-logic. Keep the description itself free of this classification.
+- Use 'name' and 'description' as the keys for every component (plus 'adjustability' for parameters and 'hardness' for constraints), and provide the values accordingly.
+""" + interpretation_taxonomy
+    else:
+        interpretation_classification_rules = """- Use 'name' and 'description' as the keys, and provide the name and description of the component as the values.
+"""
+
     model_interpretation_prompt = """
 You are an operations research expert specializing in water management optimization, and your role is to use PLAIN ENGLISH to interpret an optimization model written in Pyomo.
 The Pyomo code is given below:
@@ -99,9 +156,8 @@ Then, generate a json file accordingly with the following format (STICK TO THIS 
 - If the model is time-indexed (e.g., uses a set T or RangeSet over time steps), describe each time-indexed component in terms of "at each time step" or "over the planning horizon".
 - For Big-M constraints (constraints containing a large constant M multiplied by a binary variable), describe them as logical switching conditions in plain language (e.g., "Ensures the orifice can only discharge when the storage level exceeds the sea level"), not as mathematical formulas.
 - For binary variables, describe the real-world decision they represent (e.g., "1 if gravity discharge is active at this time step, 0 otherwise") rather than calling them "binary integers".
-- Note that I'm going to use python json.loads() function to parse the json file, so please make sure the format is correct (don't add ',' before enclosing '}}' or ']' characters.
+""" + interpretation_classification_rules + """- Note that I'm going to use python json.loads() function to parse the json file, so please make sure the format is correct (don't add ',' before enclosing '}}' or ']' characters.
 - Generate the complete json file and don't omit anything.
-- Use 'name' and 'description' as the keys, and provide the name and description of the component as the values.
 - Use '```json' and '```' to enclose the json file.
 
 Take a deep breath and solve the problem step by step.
@@ -122,6 +178,7 @@ The json representation is given below:
 - Explain what constraints are imposed on the decisions. Describe Big-M or logical constraints as physical operating rules (e.g., "gravity drainage can only occur when the storage level is above the sea level"), not as mathematical inequalities.
 - Explain what the objective is, what is being optimized, and what it means in practice (e.g., minimizing total pumping volume reduces energy cost and wear on pumps).
 - Describe the model's STRUCTURE only. Do NOT fabricate specific solution numbers: if an optimal solution is explicitly provided to you, you may state its objective value, but never invent a per-time-step schedule, a pumping total, or any other result that was not given to you.
+- Conclude with which quantities the operator can actually adjust, and which are fixed physics/infrastructure.
 
 The explanation must be coherent and easy to understand for water management operators and hydraulic engineers who are domain experts but not experts in optimization.
 """
@@ -147,10 +204,7 @@ To understand what the parameters and the constraints mean, the json representat
 - Explain the relationship between the constraints and the parameters, and infer why the constraints are conflicting with each other in physical terms (e.g., "the required outflow exceeds what the pump and orifice can deliver given the current sea level").
 - Provide inference by analyzing their physical meanings, and AVOID using jargon and symbols as much as possible but the explanation style must be formal.
 - Recommend some parameters that you believe can be adjusted to make the model feasible.
-- Parameters recommended for adjustment MUST be physically changeable in practice. Use the following water management guidance:
-  * CAN typically be adjusted: maximum pump discharge capacity, water level bounds (target levels, flood thresholds), inflow forecasts (subject to forecast uncertainty), planning horizon length.
-  * CANNOT be adjusted: gravitational acceleration (g), storage area (A, which is fixed by geography), orifice geometry (width w, height d, discharge coefficient C — these are fixed civil structures), physical fluid properties.
-  * MODELING ARTIFACT — do NOT recommend adjusting: Big-M constants (named M or similar large numerical values used in logical constraints) — these are mathematical artifacts, not physical parameters.
+- Use the adjustability classification given in the json representation; only recommend adjusting operational or infrastructural parameters.
 - Assess the practical implications of the recommendations in operational terms (e.g., "increasing the pump capacity means installing a larger pump, which requires capital investment and a longer lead time").
 """
 

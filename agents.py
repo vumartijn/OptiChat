@@ -2,7 +2,7 @@ import copy
 import time
 from typing import Dict, Optional, Union, List
 from anthropic import Anthropic
-from prompts import get_prompts
+from prompts import get_prompts, get_interpretation_style
 from internal_tools import feasibility_restoration, sensitivity_analysis, components_retrival, evaluate_modification
 from internal_tools import alternative_solutions
 from internal_tools import syntax_guidance, fnArgsDecoder
@@ -242,6 +242,27 @@ class Interpreter(Agent):
         if component_type in self.interpretation_json_template["components"]:
             del self.interpretation_json_template["components"][component_type]
 
+    def _needs_interpretation(self, component_type, value):
+        """A component needs an interpreter pass if it has no description yet, or —
+        when adjustability/hardness classification is enabled (INTERPRETATION_STYLE
+        in prompts.py) — if it has not been classified yet. Without the second check,
+        components documented with doc strings would be skipped and never receive
+        a classification."""
+        if value.get('description') in ['None', None]:
+            return True
+        style = get_interpretation_style()
+        if style == 'embedded':
+            if component_type == 'parameters':
+                return '(adjustability:' not in str(value.get('description'))
+            if component_type == 'constraints':
+                return '(hardness:' not in str(value.get('description'))
+        elif style == 'structured':
+            if component_type == 'parameters':
+                return 'adjustability' not in value
+            if component_type == 'constraints':
+                return 'hardness' not in value
+        return False
+
     def generate_interpretation(self, models_dict: Dict, code: str, model_name="model_1"):
         task_complete = False
         cnt = 3
@@ -252,7 +273,7 @@ class Interpreter(Agent):
             for component_type in ['sets', 'parameters', 'variables', 'constraints', 'objective']:
                 need2describe[component_type] = []
                 for key, value in models_dict[model_name]["components"][component_type].items():
-                    if value.get('description') in ['None', None]:
+                    if self._needs_interpretation(component_type, value):
                         need2describe[component_type].append(key)
                 # if there are components that haven't been described, add them to the prompt
                 if len(need2describe[component_type]) > 0:
@@ -301,8 +322,18 @@ class Interpreter(Agent):
                         # update models_dict with the new descriptions if format is correct,
                         # next time less components will be included in the prompt
                         if ('name' in component) and ('description' in component):
-                            models_dict[model_name]["components"][key][component["name"]]["description"] = component[
-                                "description"]
+                            target = models_dict[model_name]["components"][key][component["name"]]
+                            # in 'structured' mode keep an existing doc-string description;
+                            # the LLM pass then only contributes the classification keys
+                            keep_doc = (get_interpretation_style() == 'structured'
+                                        and target.get('description') not in ['None', None])
+                            if not keep_doc:
+                                target["description"] = component["description"]
+                            # machine-readable classification keys (Variant B); they propagate
+                            # automatically via update_model_representation
+                            for extra_key in ('adjustability', 'hardness'):
+                                if extra_key in component:
+                                    target[extra_key] = component[extra_key]
                         else:
                             print(f'Invalid component format marked!, {component}')
                             task_complete = False
@@ -364,7 +395,7 @@ class Interpreter(Agent):
             for component_type in ['sets', 'parameters', 'variables', 'constraints', 'objective']:
                 need2describe[component_type] = []
                 for key, value in models_dict[model_name]["components"][component_type].items():
-                    if value.get('description') in ['None', None]:
+                    if self._needs_interpretation(component_type, value):
                         need2describe[component_type].append(key)
                 # if there are components that haven't been described, add them to the prompt
                 if len(need2describe[component_type]) > 0:
@@ -418,8 +449,18 @@ class Interpreter(Agent):
                         # update models_dict with the new descriptions if format is correct,
                         # next time less components will be included in the prompt
                         if ('name' in component) and ('description' in component):
-                            models_dict[model_name]["components"][key][component["name"]]["description"] = component[
-                                "description"]
+                            target = models_dict[model_name]["components"][key][component["name"]]
+                            # in 'structured' mode keep an existing doc-string description;
+                            # the LLM pass then only contributes the classification keys
+                            keep_doc = (get_interpretation_style() == 'structured'
+                                        and target.get('description') not in ['None', None])
+                            if not keep_doc:
+                                target["description"] = component["description"]
+                            # machine-readable classification keys (Variant B); they propagate
+                            # automatically via update_model_representation
+                            for extra_key in ('adjustability', 'hardness'):
+                                if extra_key in component:
+                                    target[extra_key] = component[extra_key]
                         else:
                             print(f'Invalid component format marked!, {component}')
                             task_complete = False

@@ -47,6 +47,8 @@ CLAUDE_MODEL = "claude-haiku-4-5"
 
 TEMPERATURE = 0.1
 
+ROUND = 2
+
 # Questions 1-5 are asked together in a single batch turn.
 BATCH_QUESTIONS = [
     "What is the maximum water level the basin can hold?",
@@ -174,12 +176,12 @@ def save_chat_history(session_idx, chat_history, detailed_chat_history, run_stam
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     base = f"{run_stamp}_session_{session_idx}_{OPTICHAT_MODEL}"
 
-    path = os.path.join(OUTPUT_DIR, f"chat_history_{base}.md")
+    path = os.path.join(OUTPUT_DIR, f"2chat_history_{base}.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n\n".join(chat_history))
     print(f"[session {session_idx}] chat history saved to {path}")
 
-    detailed_path = os.path.join(OUTPUT_DIR, f"detailed_chat_history_{base}.md")
+    detailed_path = os.path.join(OUTPUT_DIR, f"{ROUND}detailed_chat_history_{base}.md")
     with open(detailed_path, "w", encoding="utf-8") as f:
         f.write("\n\n".join(detailed_chat_history))
     print(f"[session {session_idx}] detailed chat history saved to {detailed_path}")
