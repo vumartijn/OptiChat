@@ -761,7 +761,7 @@ def evaluate_modification(queried_components: List[Dict], queried_model, models_
 
 
 def alternative_solutions(queried_components: List[Dict], queried_model, models_dict,
-                          n_solutions: int = 5, pool_gap: Optional[float] = None,
+                          n_solutions: int = 5, pool_gap: float = 1.0,
                           max_diffs_reported: int = 15, tol: float = 1e-5):
     """Generate near-optimal alternative solutions (counterfactuals) with Gurobi's
     solution pool, and contrast them with the incumbent optimal solution.
@@ -805,10 +805,10 @@ def alternative_solutions(queried_components: List[Dict], queried_model, models_
         opt.set_instance(model)
         opt.set_gurobi_param('NonConvex', 2)
         opt.set_gurobi_param('TimeLimit', 300)
+        opt.set_gurobi_param('Threads', 1)
         opt.set_gurobi_param('PoolSearchMode', 2)          # find the n best solutions
         opt.set_gurobi_param('PoolSolutions', int(n_solutions) + 1)  # +1 to include incumbent P
-        if pool_gap is not None:
-            opt.set_gurobi_param('PoolGap', float(pool_gap))  # only keep Q within pool_gap of P
+        opt.set_gurobi_param('PoolGap', float(pool_gap))  # relative: 1 = keep Q within 100% of P
         results = opt.solve(tee=True)
     except Exception as e:
         feedback = (f"Error: Could not generate a solution pool with the Gurobi persistent interface ({e}). "

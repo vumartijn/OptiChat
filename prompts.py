@@ -1,22 +1,3 @@
-# ---------------------------------------------------------------------------
-# Interpretation style for the Interpreter agent (experiment switch):
-#   'baseline'   — original behavior: name + description only.
-#   'embedded'   — Variant A: adjustability (parameters) and hardness
-#                  (constraints) classifications appended INSIDE the
-#                  description text; no downstream code depends on it.
-#   'structured' — Variant B: separate machine-readable 'adjustability' and
-#                  'hardness' JSON keys next to a clean description
-#                  (doc-string descriptions are preserved in this mode).
-# The classification propagates automatically to the illustration, the IIS
-# inference, and the Engineer's syntax step via model_representation.
-# ---------------------------------------------------------------------------
-INTERPRETATION_STYLE = 'structured'
-
-
-def get_interpretation_style():
-    return INTERPRETATION_STYLE
-
-
 feasibility_restoration_fn_description = """
 Use when: The model is infeasible and you need to find out the minimal change to specific [component name] for restoring feasibility.
 Example: “How much should we adjust the [component name] to make the model feasible”
@@ -99,11 +80,10 @@ Here are the name of {component_type} that need to be described
 
     # Variant B ('structured'): parameters and constraints carry machine-readable
     # classification keys next to the plain-English description.
-    if INTERPRETATION_STYLE == 'structured':
-        model_interpretation_json["components"]["parameters"][0]["adjustability"] = \
-            "EXACTLY one of: operational | forecast | infrastructural | physical | artifact"
-        model_interpretation_json["components"]["constraints"][0]["hardness"] = \
-            "EXACTLY one of: physical-law | infrastructure-limit | operational-limit | policy-target | artifact-logic"
+    model_interpretation_json["components"]["parameters"][0]["adjustability"] = \
+        "EXACTLY one of: operational | forecast | infrastructural | physical | artifact"
+    model_interpretation_json["components"]["constraints"][0]["hardness"] = \
+        "EXACTLY one of: physical-law | infrastructure-limit | operational-limit | policy-target | artifact-logic"
 
     interpretation_taxonomy = """
 ADJUSTABILITY classes for parameters (how changeable the quantity is in the real world):
@@ -393,7 +373,7 @@ Your task is to invoke the most appropriate tool correctly based on the user's q
 
     programmer_prompt = """
     You're an optimization expert who helps your team to write pyomo code to answer users questions, such as
-    - write code snippet to revise the model, only when the user doubts the model's optimal solution and provides a counterexample
+    - write code snippet to revise the model, ONLY when the user doubts the model's optimal solution and provides a counterexample. Your own suspicion does not count.
     - write code snippet to print out the information useful for answering the user's question
 
     Output Format:
