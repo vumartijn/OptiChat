@@ -7,9 +7,8 @@ import csv
 from extractor import (get_files, get_files_generator, initial_loading, update_model_representation,
                        get_skipJSON, feed_skipJSON)
 from internal_tools import feasibility_restoration, sensitivity_analysis, components_retrival, evaluate_modification
-from utils import get_agents, OptiChat_workflow_exp
+from utils import get_agents, OptiChat_workflow_exp, make_client, default_model
 from pyomo.opt import TerminationCondition
-from anthropic import Anthropic
 
 
 class Args:
@@ -46,7 +45,7 @@ class Args:
         return ', '.join(f'{k}={v}' for k, v in self.__dict__.items())
 
 
-client = Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
+client = make_client()
 
 
 def run_interpretation_experiment(args):
@@ -900,7 +899,7 @@ if __name__ == '__main__':
     skip_syntax = False
     skip_description = True
 
-    claude_model = 'claude-haiku-4-5'  # 'claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7'
+    claude_model = default_model()  # provider default; e.g. 'FAST.gpt-oss:120b' (Nebula) or 'claude-haiku-4-5'
     temperature = 0  # temperature for the model
 
     if sum([interpreter_experiment, internal_experiment, external_experiment]) > 1:

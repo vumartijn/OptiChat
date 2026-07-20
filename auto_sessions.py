@@ -22,9 +22,8 @@ import os
 import datetime
 
 from extractor import initial_loading, update_model_representation
-from utils import get_agents, OptiChat_workflow_exp
+from utils import get_agents, OptiChat_workflow_exp, make_client, default_model
 from pyomo.opt import TerminationCondition
-from anthropic import Anthropic
 from dotenv import load_dotenv, find_dotenv
 
 _ = load_dotenv(find_dotenv())
@@ -43,7 +42,7 @@ OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/chats/{OPTICHAT_MODEL}"
 
 NUM_SESSIONS = 3
 
-CLAUDE_MODEL = "claude-haiku-4-5"
+CLAUDE_MODEL = default_model()
 
 TEMPERATURE = 0.1
 
@@ -189,7 +188,7 @@ def save_chat_history(session_idx, chat_history, detailed_chat_history, run_stam
 
 def main():
     run_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    client = Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
+    client = make_client()
     args = Args(CLAUDE_MODEL, TEMPERATURE)
     agents = get_agents(args.fn_names, client, args.claude_model)
 

@@ -2,6 +2,7 @@ import copy
 import time
 from typing import Dict, Optional, Union, List
 from anthropic import Anthropic
+from openai import OpenAI
 from prompts import get_prompts
 from internal_tools import feasibility_restoration, sensitivity_analysis, components_retrival, evaluate_modification
 from internal_tools import alternative_solutions
@@ -89,6 +90,25 @@ def _stream_text_generator(stream_cm):
             yield text
 
 
+def _openai_stream_text_generator(stream):
+    """Yield text chunks from an OpenAI-compatible streaming response."""
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
+
+
+def _to_openai_messages(system_str, messages):
+    """Prepend the system prompt (if any) to the collapsed message list.
+
+    `messages` here are the role/content dicts produced by
+    `_to_anthropic_messages`; they are already valid OpenAI chat messages.
+    """
+    return ([{"role": "system", "content": system_str}] if system_str else []) + messages
+
+
 class Agent:
     def __init__(self, name, description, client, llm="claude-haiku-4-5", **kwargs):
         self.name = name
@@ -142,6 +162,16 @@ class Agent:
 
             response = self.client.messages.create(**kwargs)
             return "".join(b.text for b in response.content if b.type == "text")
+        else:
+            completion = self.client.chat.completions.create(
+                model=self.llm,
+                messages=_to_openai_messages(system_str, anthropic_messages),
+                max_tokens=_DEFAULT_MAX_TOKENS,
+                stream=stream,
+            )
+            if stream:
+                return _openai_stream_text_generator(completion)
+            return completion.choices[0].message.content
 
     @staticmethod
     def generate_pseudo_messages(messages: List[Dict], team_conversation: List[Dict],
@@ -214,6 +244,20 @@ class Agent:
 
             response = self.client.messages.create(**kwargs)
             return "".join(b.text for b in response.content if b.type == "text")
+        else:
+            kwargs = {
+                "model": self.llm,
+                "messages": _to_openai_messages(system_str, anthropic_messages),
+                "max_tokens": _DEFAULT_MAX_TOKENS,
+                "temperature": temperature,
+                "stream": stream,
+            }
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+            completion = self.client.chat.completions.create(**kwargs)
+            if stream:
+                return _openai_stream_text_generator(completion)
+            return completion.choices[0].message.content
 
 
 class Interpreter(Agent):
@@ -499,7 +543,7 @@ class Interpreter(Agent):
 
 class Coordinator(Agent):
     def __init__(
-        self, client: Anthropic, agents: [Agent], max_rounds: int = 5, **kwargs
+        self, client: Anthropic, agents: List[Agent], max_rounds: int = 5, **kwargs
     ):
         super().__init__(
             name="Coordinator",
@@ -820,7 +864,25 @@ class Engineer(Agent):
             print(f'function name = {fn_name}')
             print(f'function arguments = {fn_args}')
         else:
-            raise Exception("Client type not supported!")
+            # NOTE: Nebula (Ollama-backed) ignores `tool_choice`, so tool use is
+            # driven by the prompt, not API-level forcing. If the model returns no
+            # tool call we raise, and the caller's retry loop tries again.
+            completion = self.client.chat.completions.create(
+                model=self.llm,
+                messages=_to_openai_messages(system_str, anthropic_messages),
+                max_tokens=_TOOL_CALL_MAX_TOKENS,
+                temperature=temperature,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+            message = completion.choices[0].message
+            if not message.tool_calls:
+                raise Exception("No tool call returned by the model.")
+            fn_call = message.tool_calls[0].function
+            fn_name = fn_call.name
+            fn_args = fn_call.arguments
+            print(f'function name = {fn_name}')
+            print(f'function arguments = {fn_args}')
         return fn_name, fn_args
 
     def generate_syntax_exp(self, args, messages, team_conversation, models_dict):
