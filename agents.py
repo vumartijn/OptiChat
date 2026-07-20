@@ -19,8 +19,8 @@ _TOOL_CALL_MAX_TOKENS = 4096
 
 
 def _supports_temperature(model_id: str) -> bool:
-    # Opus 4.7 removed sampling parameters; sending temperature returns 400.
-    return not str(model_id).startswith("claude-opus-4-7")
+    # Opus 4.7/4.8 removed sampling parameters; sending temperature returns 400.
+    return not str(model_id).startswith("claude-opus-4-8")
 
 
 def _to_anthropic_messages(messages, base_system_prompt):

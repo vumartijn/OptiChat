@@ -32,7 +32,7 @@ from agents import Interpreter, Coordinator, Explainer, Engineer
 # is OpenAI-compatible, so we reach it with the `openai` client plus a base_url.
 NEBULA_BASE_URL = os.environ.get("NEBULA_BASE_URL", "https://nebula.cs.vu.nl/api")
 NEBULA_MODELS = ["FAST.gpt-oss:120b", "SURF.gpt-oss-120b", "FAST.gemma3:12b", "llama3.1:8b"]
-CLAUDE_MODELS = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
+CLAUDE_MODELS = ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"]
 
 
 def get_provider():
