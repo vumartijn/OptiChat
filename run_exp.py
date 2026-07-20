@@ -9,7 +9,7 @@ from extractor import (get_files, get_files_generator, initial_loading, update_m
 from internal_tools import feasibility_restoration, sensitivity_analysis, components_retrival, evaluate_modification
 from utils import get_agents, OptiChat_workflow_exp
 from pyomo.opt import TerminationCondition
-from openai import OpenAI
+from anthropic import Anthropic
 
 
 class Args:
@@ -46,9 +46,7 @@ class Args:
         return ', '.join(f'{k}={v}' for k, v in self.__dict__.items())
 
 
-NEBULA_BASE_URL = "https://nebula.cs.vu.nl/api/"
-
-client = OpenAI(api_key=os.environ["NEBULA_API_KEY"], base_url=NEBULA_BASE_URL)
+client = Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
 
 
 def run_interpretation_experiment(args):
@@ -902,7 +900,7 @@ if __name__ == '__main__':
     skip_syntax = False
     skip_description = True
 
-    claude_model = 'FAST.gpt-oss:120b'  # 'FAST.gpt-oss:120b', 'llama3.1:8b', 'FAST.gemma3:12b'
+    claude_model = 'claude-haiku-4-5'  # 'claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7'
     temperature = 0  # temperature for the model
 
     if sum([interpreter_experiment, internal_experiment, external_experiment]) > 1:

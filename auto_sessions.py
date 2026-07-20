@@ -24,7 +24,7 @@ import datetime
 from extractor import initial_loading, update_model_representation
 from utils import get_agents, OptiChat_workflow_exp
 from pyomo.opt import TerminationCondition
-from openai import OpenAI
+from anthropic import Anthropic
 from dotenv import load_dotenv, find_dotenv
 
 _ = load_dotenv(find_dotenv())
@@ -43,9 +43,7 @@ OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/chats/{OPTICHAT_MODEL}"
 
 NUM_SESSIONS = 3
 
-CLAUDE_MODEL = "FAST.gpt-oss:120b"
-
-NEBULA_BASE_URL = "https://nebula.cs.vu.nl/api/"
+CLAUDE_MODEL = "claude-haiku-4-5"
 
 TEMPERATURE = 0.1
 
@@ -191,7 +189,7 @@ def save_chat_history(session_idx, chat_history, detailed_chat_history, run_stam
 
 def main():
     run_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    client = OpenAI(api_key=os.environ["NEBULA_API_KEY"], base_url=NEBULA_BASE_URL)
+    client = Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
     args = Args(CLAUDE_MODEL, TEMPERATURE)
     agents = get_agents(args.fn_names, client, args.claude_model)
 
