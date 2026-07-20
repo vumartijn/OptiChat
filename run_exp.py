@@ -9,7 +9,7 @@ from extractor import (get_files, get_files_generator, initial_loading, update_m
 from internal_tools import feasibility_restoration, sensitivity_analysis, components_retrival, evaluate_modification
 from utils import get_agents, OptiChat_workflow_exp
 from pyomo.opt import TerminationCondition
-from anthropic import Anthropic
+from openai import OpenAI
 
 
 class Args:
@@ -40,13 +40,15 @@ class Args:
         self.illustration_stream = False
         self.inference_stream = False
         self.explanation_stream = False
-        self.fn_names = ["feasibility_restoration", "sensitivity_analysis", "components_retrival", "evaluate_modification", "alternative_solutions", "external_tools"]
+        self.fn_names = ["feasibility_restoration", "sensitivity_analysis", "components_retrival", "evaluate_modification", "alternative_solutions", "scenario_risk_assessment", "stochastic_hedging_analysis", "external_tools"]
 
     def __str__(self):
         return ', '.join(f'{k}={v}' for k, v in self.__dict__.items())
 
 
-client = Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
+NEBULA_BASE_URL = "https://nebula.cs.vu.nl/api/"
+
+client = OpenAI(api_key=os.environ["NEBULA_API_KEY"], base_url=NEBULA_BASE_URL)
 
 
 def run_interpretation_experiment(args):
@@ -900,7 +902,7 @@ if __name__ == '__main__':
     skip_syntax = False
     skip_description = True
 
-    claude_model = 'claude-haiku-4-5'  # 'claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7'
+    claude_model = 'FAST.gpt-oss:120b'  # 'FAST.gpt-oss:120b', 'llama3.1:8b', 'FAST.gemma3:12b'
     temperature = 0  # temperature for the model
 
     if sum([interpreter_experiment, internal_experiment, external_experiment]) > 1:

@@ -1,5 +1,5 @@
 import streamlit as st
-from anthropic import Anthropic
+from openai import OpenAI
 import os
 from io import StringIO
 import time
@@ -22,7 +22,9 @@ def string_generator(long_string, chunk_size=50):
         time.sleep(0.1)  # Optionally add a small delay between each yield
 
 
-client = Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
+NEBULA_BASE_URL = "https://nebula.cs.vu.nl/api/"
+
+client = OpenAI(api_key=os.environ["NEBULA_API_KEY"], base_url=NEBULA_BASE_URL)
 st.session_state['client'] = client
 st.session_state['temperature'] = 0.1  # by default
 st.session_state['json_mode'] = True  # by default
@@ -37,11 +39,11 @@ st.set_page_config(layout='wide')
 st.title("OptiChat: Talk to your Optimization Model")
 
 
-claude_model = st.sidebar.selectbox(label="Claude Model", options=["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"], )
+claude_model = st.sidebar.selectbox(label="Nebula Model", options=["FAST.gpt-oss:120b", "llama3.1:8b", "FAST.gemma3:12b"], )
 st.session_state["claude_model"] = claude_model
 # Set a default model
 if "claude_model" not in st.session_state:
-    st.session_state["claude_model"] = "claude-haiku-4-5"
+    st.session_state["claude_model"] = "FAST.gpt-oss:120b"
 if "models_dict" not in st.session_state:
     st.session_state["models_dict"] = {"model_representation": {}}
 if "code" not in st.session_state:
@@ -56,6 +58,8 @@ st.session_state['fn_names'] = ["feasibility_restoration",
                                 "components_retrival",
                                 "evaluate_modification",
                                 "alternative_solutions",
+                                "scenario_risk_assessment",
+                                "stochastic_hedging_analysis",
                                 "external_tools"]
 
 interpreter, explainer, engineer, coordinator = get_agents(st.session_state.fn_names,

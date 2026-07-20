@@ -2,9 +2,10 @@ import copy
 import time
 from typing import Dict, Optional, Union, List
 from anthropic import Anthropic
-from prompts import get_prompts, get_interpretation_style
+from prompts import get_prompts
 from internal_tools import feasibility_restoration, sensitivity_analysis, components_retrival, evaluate_modification
 from internal_tools import alternative_solutions
+from internal_tools import scenario_risk_assessment, stochastic_hedging_analysis
 from internal_tools import syntax_guidance, fnArgsDecoder
 from extractor import extract_component_descriptions, insert_code, run_with_exec
 import json
@@ -243,24 +244,16 @@ class Interpreter(Agent):
             del self.interpretation_json_template["components"][component_type]
 
     def _needs_interpretation(self, component_type, value):
-        """A component needs an interpreter pass if it has no description yet, or —
-        when adjustability/hardness classification is enabled (INTERPRETATION_STYLE
-        in prompts.py) — if it has not been classified yet. Without the second check,
-        components documented with doc strings would be skipped and never receive
-        a classification."""
+        """A component needs an interpreter pass if it has no description yet, or
+        if it has not been classified yet with the adjustability/hardness keys.
+        Without the second check, components documented with doc strings would be
+        skipped and never receive a classification."""
         if value.get('description') in ['None', None]:
             return True
-        style = get_interpretation_style()
-        if style == 'embedded':
-            if component_type == 'parameters':
-                return '(adjustability:' not in str(value.get('description'))
-            if component_type == 'constraints':
-                return '(hardness:' not in str(value.get('description'))
-        elif style == 'structured':
-            if component_type == 'parameters':
-                return 'adjustability' not in value
-            if component_type == 'constraints':
-                return 'hardness' not in value
+        if component_type == 'parameters':
+            return 'adjustability' not in value
+        if component_type == 'constraints':
+            return 'hardness' not in value
         return False
 
     def generate_interpretation(self, models_dict: Dict, code: str, model_name="model_1"):
@@ -323,14 +316,11 @@ class Interpreter(Agent):
                         # next time less components will be included in the prompt
                         if ('name' in component) and ('description' in component):
                             target = models_dict[model_name]["components"][key][component["name"]]
-                            # in 'structured' mode keep an existing doc-string description;
-                            # the LLM pass then only contributes the classification keys
-                            keep_doc = (get_interpretation_style() == 'structured'
-                                        and target.get('description') not in ['None', None])
+                            # keep an existing doc-string description; the LLM pass then
+                            # only contributes the classification keys
+                            keep_doc = target.get('description') not in ['None', None]
                             if not keep_doc:
                                 target["description"] = component["description"]
-                            # machine-readable classification keys (Variant B); they propagate
-                            # automatically via update_model_representation
                             for extra_key in ('adjustability', 'hardness'):
                                 if extra_key in component:
                                     target[extra_key] = component[extra_key]
@@ -450,14 +440,11 @@ class Interpreter(Agent):
                         # next time less components will be included in the prompt
                         if ('name' in component) and ('description' in component):
                             target = models_dict[model_name]["components"][key][component["name"]]
-                            # in 'structured' mode keep an existing doc-string description;
-                            # the LLM pass then only contributes the classification keys
-                            keep_doc = (get_interpretation_style() == 'structured'
-                                        and target.get('description') not in ['None', None])
+                            # keep an existing doc-string description; the LLM pass then
+                            # only contributes the classification keys
+                            keep_doc = target.get('description') not in ['None', None]
                             if not keep_doc:
                                 target["description"] = component["description"]
-                            # machine-readable classification keys (Variant B); they propagate
-                            # automatically via update_model_representation
                             for extra_key in ('adjustability', 'hardness'):
                                 if extra_key in component:
                                     target[extra_key] = component[extra_key]
@@ -911,6 +898,10 @@ class Engineer(Agent):
                     fn_output = evaluate_modification(self.queried_components, self.queried_model, models_dict)
                 elif fn_name == 'alternative_solutions':
                     fn_output = alternative_solutions(self.queried_components, self.queried_model, models_dict)
+                elif fn_name == 'scenario_risk_assessment':
+                    fn_output = scenario_risk_assessment(self.queried_components, self.queried_model, models_dict)
+                elif fn_name == 'stochastic_hedging_analysis':
+                    fn_output = stochastic_hedging_analysis(self.queried_components, self.queried_model, models_dict)
                 else:
                     raise Exception("invalid function name")
                 # Some predefined functions return a soft "Error:" string when they

@@ -2,8 +2,9 @@ from typing import Dict, Optional, Union, List
 import random
 import copy
 
+import numpy as np
 import pyomo.environ as pe
-from pyomo.core.expr.visitor import identify_mutable_parameters, replace_expressions, clone_expression
+from pyomo.core.expr.visitor import identify_mutable_parameters, identify_variables, replace_expressions, clone_expression
 from pyomo.core.expr.calculus.derivatives import differentiate
 from pyomo.opt import SolverFactory, TerminationCondition, SolverStatus
 
@@ -99,7 +100,8 @@ def syntax_guidance(queried_function: str,
                     models_dict):
 
     FUNCTIONS = ['feasibility_restoration', 'sensitivity_analysis', 'components_retrival', 'evaluate_modification',
-                 'alternative_solutions', 'external_tools']
+                 'alternative_solutions', 'scenario_risk_assessment', 'stochastic_hedging_analysis',
+                 'external_tools']
     assert queried_function in FUNCTIONS, f"Function {queried_function} is not recognized."
     if queried_function == 'external_tools':
         return "external_tools", "none"
@@ -879,6 +881,553 @@ def alternative_solutions(queried_components: List[Dict], queried_model, models_
     feedback += ("\nUse these counterfactuals to explain the optimality of P: for each alternative Q, state that "
                  "it IS a valid alternative but is worse by the reported gap, and point to the specific decision "
                  "changes that cause the worse objective. Frame it as 'P is better than Q because ...'. \n")
+    return "Feedback from internal tools: \n" + feedback
+
+
+# ---------------------------------------------------------------------------
+# Stochastic-forecast tools
+#
+# The deterministic model treats forecast parameters (e.g. the inflow) as
+# known. These two tools quantify what forecast uncertainty does to the
+# solution, so that the Explainer never has to guess about risk:
+#   * scenario_risk_assessment  — Monte-Carlo stress test of the incumbent
+#     (deterministic) first-stage schedule under sampled forecast scenarios.
+#   * stochastic_hedging_analysis — two-stage stochastic program (extensive
+#     form) that produces a hedged first-stage schedule and the classic
+#     stochastic-programming diagnostics (VSS, EVPI, wet/dry contrasts).
+#
+# The scenario generator is the SAME AR(1) log-normal process as in
+# Scriptie_martijn/'stochastic approximation.py' (multiplicative noise around
+# the deterministic forecast, mean-preserving), so SPSA results obtained
+# outside OptiChat remain a valid cross-check of these tools.
+# ---------------------------------------------------------------------------
+
+def _ar1_lognormal_scenarios(forecast, n_scenarios, phi, sigma_eps, rng):
+    """Sample forecast trajectories around the deterministic forecast.
+
+    Z_t = phi*Z_{t-1} + eps_t (Z_0 = 0),  path[t] = forecast[t] * exp(Z_t - sigma_Y^2/2),
+    with sigma_Y^2 the stationary variance of Z. For a constant forecast this is
+    exactly the generator of the SPSA study; the cone starts at the current
+    observation and widens with lead time, mean-preserving in the long run.
+    """
+    forecast = np.asarray(forecast, dtype=float)
+    horizon = forecast.size
+    sigma_y2 = sigma_eps ** 2 / (1.0 - phi ** 2)
+    z = np.zeros((n_scenarios, horizon))
+    eps = rng.normal(0.0, sigma_eps, size=(n_scenarios, horizon))
+    for t in range(1, horizon):
+        z[:, t] = phi * z[:, t - 1] + eps[:, t]
+    return forecast * np.exp(z - 0.5 * sigma_y2)
+
+
+def _trajectory_indexes(component):
+    return sorted(component.index_set())
+
+
+def _set_trajectory(model, param_name, path):
+    param = getattr(model, param_name)
+    for value, idx in zip(path, _trajectory_indexes(param)):
+        param[idx].set_value(float(value))
+
+
+def _solve_quietly(model, time_limit=300):
+    opt = SolverFactory('gurobi')
+    opt.options['nonConvex'] = 2
+    opt.options['TimeLimit'] = time_limit
+    results = opt.solve(model, tee=False)
+    return results.solver.termination_condition
+
+
+def _active_objective(model):
+    return next(model.component_objects(pe.Objective, active=True))
+
+
+def _first_stage_variable_names(model, queried_model_dict, queried_components):
+    """Variables held fixed while scenarios play out (the here-and-now schedule).
+
+    The user/LLM can name them explicitly in queried_components; the default is
+    the set of decision variables that appear in the objective (the cost-bearing
+    controls, e.g. Q_pump), everything else being recourse/state.
+    """
+    names = []
+    for component in (queried_components or []):
+        name = component.get('component_name')
+        if name is not None and get_component_type(name, queried_model_dict) == 'variables':
+            names.append(name)
+    names = list(dict.fromkeys(names))
+    if not names:
+        obj = _active_objective(model)
+        names = list(dict.fromkeys(
+            v.parent_component().name for v in identify_variables(obj.expr, include_fixed=True)))
+    return names
+
+
+def _uncertain_parameter_name(queried_model_dict, queried_components):
+    """Pick the forecast parameter to perturb. Returns (name, None) on success,
+    or (None, candidates) when the tool cannot decide on its own."""
+    params_meta = queried_model_dict['components']['parameters']
+    named = []
+    for component in (queried_components or []):
+        name = component.get('component_name')
+        if name is not None and get_component_type(name, queried_model_dict) == 'parameters':
+            named.append(name)
+    named = list(dict.fromkeys(named))
+    named_indexed = [n for n in named if params_meta[n]['is_indexed']]
+    if named_indexed:
+        return named_indexed[0], None
+    if named:
+        # only scalar parameters were named — uncertainty needs a trajectory
+        return None, [n for n, meta in params_meta.items() if meta['is_indexed']]
+    # fall back on the Interpreter's adjustability classification, if present
+    forecast_params = [n for n, meta in params_meta.items()
+                       if meta.get('adjustability') == 'forecast' and meta['is_indexed']]
+    if len(forecast_params) == 1:
+        return forecast_params[0], None
+    candidates = forecast_params or [n for n, meta in params_meta.items() if meta['is_indexed']]
+    return None, candidates
+
+
+def _soften_recourse_constraints(model, first_stage_names, violation_penalty):
+    """Make the model relatively complete recourse: inequality constraints that
+    involve only continuous non-first-stage (state/recourse) variables — e.g. a
+    storage level limit — become soft with a penalised violation slack, and the
+    native bounds of those state variables are softened the same way. Physics
+    (equalities), logic (anything with binaries) and first-stage capacity
+    constraints stay hard. Returns one label per slack, aligned with the
+    soft_violation VarList indexes 1..n (labels survive model.clone()).
+    """
+    first_stage = set(first_stage_names)
+    candidates = []
+    for cons in list(model.component_objects(pe.Constraint, active=True)):
+        for idx in cons:
+            con = cons[idx]
+            if con.equality:
+                continue
+            vars_in = list(identify_variables(con.body, include_fixed=True))
+            if not vars_in:
+                continue
+            if any(v.parent_component().name in first_stage for v in vars_in):
+                continue
+            if any(v.is_binary() or v.is_integer() for v in vars_in):
+                continue
+            candidates.append((cons, idx, con))
+
+    model.soft_violation = pe.VarList(domain=pe.NonNegativeReals)
+    model.soft_constraints = pe.ConstraintList()
+    records = []
+
+    softened_var_names = set()
+    for cons, idx, con in candidates:
+        for v in identify_variables(con.body, include_fixed=True):
+            softened_var_names.add(v.parent_component().name)
+        suffix = "" if idx is None else f"[{idx}]"
+        if con.has_ub():
+            slack = model.soft_violation.add()
+            model.soft_constraints.add(con.body - slack <= con.upper)
+            records.append({'label': f"{cons.name}{suffix} (upper)", 'index': idx})
+        if con.has_lb():
+            slack = model.soft_violation.add()
+            model.soft_constraints.add(con.body + slack >= con.lower)
+            records.append({'label': f"{cons.name}{suffix} (lower)", 'index': idx})
+        con.deactivate()
+
+    # native bounds of the state variables must be softened too, otherwise a
+    # fixed schedule can make a scenario infeasible (e.g. pumping the basin dry)
+    for var_name in sorted(softened_var_names):
+        var = getattr(model, var_name)
+        for idx in var:
+            vardata = var[idx]
+            if vardata.is_binary() or vardata.is_integer():
+                continue
+            suffix = "" if idx is None else f"[{idx}]"
+            if vardata.lb is not None:
+                slack = model.soft_violation.add()
+                model.soft_constraints.add(vardata + slack >= vardata.lb)
+                records.append({'label': f"{var_name}{suffix} (below lower bound)", 'index': idx})
+                vardata.domain = pe.Reals
+                vardata.setlb(None)
+            if vardata.ub is not None:
+                slack = model.soft_violation.add()
+                model.soft_constraints.add(vardata - slack <= vardata.ub)
+                records.append({'label': f"{var_name}{suffix} (above upper bound)", 'index': idx})
+                vardata.setub(None)
+
+    obj = _active_objective(model)
+    sign = 1.0 if obj.sense == pe.minimize else -1.0
+    obj.expr = obj.expr + sign * violation_penalty * sum(model.soft_violation.values())
+    return records
+
+
+def _binding_candidates(model):
+    """Hard inequality constraints (no binaries, still active after softening)
+    whose tightness is worth reporting, e.g. the pump capacity limit."""
+    candidates = []
+    for cons in model.component_objects(pe.Constraint, active=True):
+        if cons.name in ('soft_constraints', 'nonanticipativity'):
+            continue
+        for idx in cons:
+            con = cons[idx]
+            if con.equality:
+                continue
+            vars_in = list(identify_variables(con.body, include_fixed=True))
+            if not vars_in or any(v.is_binary() or v.is_integer() for v in vars_in):
+                continue
+            suffix = "" if idx is None else f"[{idx}]"
+            candidates.append({'cons_name': cons.name, 'index': idx,
+                               'label': f"{cons.name}{suffix}"})
+    return candidates
+
+
+def _is_binding(model, candidate, tol=1e-5):
+    con = getattr(model, candidate['cons_name'])[candidate['index']]
+    body = pe.value(con.body)
+    if con.has_ub() and abs(pe.value(con.upper) - body) <= tol:
+        return True
+    if con.has_lb() and abs(body - pe.value(con.lower)) <= tol:
+        return True
+    return False
+
+
+def _evaluate_fixed_schedule(model, param_name, scenarios, records, tol):
+    """Solve the (softened) model once per scenario with the first stage already
+    fixed, and collect cost and violation statistics. Returns one dict per
+    scenario; 'solved' is False when the solver failed on that scenario."""
+    obj = _active_objective(model)
+    out = []
+    for path in scenarios:
+        _set_trajectory(model, param_name, path)
+        termination = _solve_quietly(model)
+        if termination != TerminationCondition.optimal:
+            out.append({'solved': False, 'termination': str(termination)})
+            continue
+        violations = []
+        for i, record in enumerate(records, start=1):
+            slack_value = model.soft_violation[i].value or 0.0
+            if slack_value > tol:
+                violations.append((record['label'], slack_value))
+        out.append({'solved': True,
+                    'cost': pe.value(obj),
+                    'violations': violations,
+                    'total_violation': sum(v for _, v in violations)})
+    return out
+
+
+def _violation_statistics(per_scenario):
+    solved = [s for s in per_scenario if s['solved']]
+    n_solved = len(solved)
+    n_failed = len(per_scenario) - n_solved
+    violated = [s for s in solved if s['violations']]
+    p_violation = len(violated) / n_solved if n_solved else float('nan')
+    half_width = 1.96 * np.sqrt(p_violation * (1 - p_violation) / n_solved) if n_solved else float('nan')
+    frequency = {}
+    for s in solved:
+        for label, _value in s['violations']:
+            frequency[label] = frequency.get(label, 0) + 1
+    worst = max(solved, key=lambda s: s['total_violation'], default=None)
+    return {'n_solved': n_solved, 'n_failed': n_failed,
+            'p_violation': p_violation, 'ci_half_width': half_width,
+            'frequency': frequency, 'worst': worst,
+            'expected_cost': float(np.mean([s['cost'] for s in solved])) if solved else float('nan')}
+
+
+def _format_violation_block(stats, n_solved, max_lines=12):
+    lines = []
+    by_frequency = sorted(stats['frequency'].items(), key=lambda kv: kv[1], reverse=True)
+    for label, count in by_frequency[:max_lines]:
+        lines.append(f"    {label}: violated in {count / n_solved:.1%} of scenarios")
+    if len(by_frequency) > max_lines:
+        lines.append(f"    ... and {len(by_frequency) - max_lines} more constraint/bound locations")
+    return "\n".join(lines) if lines else "    (none)"
+
+
+def scenario_risk_assessment(queried_components: List[Dict], queried_model, models_dict,
+                             n_scenarios: int = 200, phi: float = 0.8, sigma_eps: float = 0.3,
+                             violation_penalty: float = 1.0e6, seed: int = 2026, tol: float = 1e-5):
+    """Monte-Carlo stress test of the incumbent optimal solution under forecast
+    uncertainty. The first-stage schedule is held fixed at the deterministic
+    optimum; the uncertain forecast parameter is resampled per scenario; only
+    the recourse (state) variables re-optimise. Reports the probability of
+    violating soft constraints, where/when violations concentrate, and the
+    worst case — everything the Explainer needs for "does this plan still work
+    if the forecast is wrong?" questions.
+    """
+    start_time = time.time()
+    queried_model_dict = models_dict[queried_model]
+
+    if queried_model_dict['model status'] in [TerminationCondition.infeasible,
+                                              TerminationCondition.infeasibleOrUnbounded]:
+        feedback = ("Error: The model is infeasible, so there is no incumbent schedule to stress-test. "
+                    "Restore feasibility first (e.g. with feasibility_restoration).")
+        return "Feedback from internal tools: \n" + feedback
+
+    param_name, candidates = _uncertain_parameter_name(queried_model_dict, queried_components)
+    if param_name is None:
+        feedback = ("Error: Could not determine which forecast parameter is uncertain. "
+                    f"Ask the user (or infer from the query) which one of these indexed parameters "
+                    f"should be treated as uncertain and query again: {candidates}.")
+        return "Feedback from internal tools: \n" + feedback
+
+    model = queried_model_dict['model class'].clone()
+    first_stage = _first_stage_variable_names(model, queried_model_dict, queried_components)
+
+    # make sure the incumbent solution is loaded before fixing the schedule
+    if any(vardata.value is None
+           for name in first_stage for vardata in getattr(model, name).values()):
+        _solve_quietly(model)
+    deterministic_objective = pe.value(_active_objective(model))
+    for name in first_stage:
+        getattr(model, name).fix()
+
+    records = _soften_recourse_constraints(model, first_stage, violation_penalty)
+    forecast = [pe.value(getattr(model, param_name)[idx])
+                for idx in _trajectory_indexes(getattr(model, param_name))]
+    rng = np.random.default_rng(seed)
+    scenarios = _ar1_lognormal_scenarios(forecast, int(n_scenarios), phi, sigma_eps, rng)
+
+    per_scenario = _evaluate_fixed_schedule(model, param_name, scenarios, records, tol)
+    stats = _violation_statistics(per_scenario)
+    if stats['n_solved'] == 0:
+        feedback = ("Error: None of the scenario evaluations solved. "
+                    "This usually means the model has no softenable state constraints, "
+                    "so fixed-schedule scenarios are infeasible outright.")
+        return "Feedback from internal tools: \n" + feedback
+
+    duration = time.time() - start_time
+    worst = stats['worst']
+    worst_line = "    (no violation in any scenario)"
+    if worst is not None and worst['violations']:
+        top_label, top_value = max(worst['violations'], key=lambda lv: lv[1])
+        worst_line = (f"    total violation {worst['total_violation']:.4g} "
+                      f"(largest single exceedance: {top_label} by {top_value:.4g})")
+    failed_note = (f" ({stats['n_failed']} scenario(s) failed to solve and were excluded)"
+                   if stats['n_failed'] else "")
+
+    feedback = (
+        f"Scenario-based risk assessment of {queried_model} (Monte-Carlo stress test).\n"
+        f"Provenance — every number below comes from exactly this computation: "
+        f"uncertain parameter {param_name} resampled with AR(1) log-normal multiplicative noise "
+        f"around its current deterministic forecast (phi={phi}, sigma_eps={sigma_eps}, mean-preserving), "
+        f"{int(n_scenarios)} scenarios, seed {seed}; first-stage schedule {first_stage} held FIXED at the "
+        f"incumbent optimal solution; recourse re-optimised per scenario (Gurobi); "
+        f"soft-constraint violation penalty {violation_penalty:g} per unit; runtime {duration:.1f}s.\n\n"
+        f"Results over {stats['n_solved']} solved scenarios{failed_note}:\n"
+        f"- probability that the fixed schedule violates at least one (soft) limit: "
+        f"{stats['p_violation']:.3f} (95% CI +/- {stats['ci_half_width']:.3f})\n"
+        f"- where the violations concentrate (share of scenarios; softened limits only):\n"
+        f"{_format_violation_block(stats, stats['n_solved'])}\n"
+        f"- worst sampled scenario:\n{worst_line}\n"
+        f"- expected cost incl. violation penalty: {stats['expected_cost']:.6g} "
+        f"(deterministic optimal objective was {deterministic_objective:.6g}; the difference is the "
+        f"expected price of forecast uncertainty under this fixed schedule)\n\n"
+        f"Guidance for the explainer: answer the user's risk question with these frequencies and "
+        f"locations (constraint/bound names map to physical limits via their descriptions). "
+        f"Every quantitative claim about uncertainty MUST come from the numbers above — do not "
+        f"extrapolate beyond them. If the user asks what to do about the risk, suggest querying the "
+        f"hedged schedule (stochastic_hedging_analysis).\n"
+    )
+    return "Feedback from internal tools: \n" + feedback
+
+
+def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, models_dict,
+                                n_scenarios: int = 30, phi: float = 0.8, sigma_eps: float = 0.3,
+                                violation_penalty: float = 1.0e6, seed: int = 2026, tol: float = 1e-5):
+    """Two-stage stochastic program over sampled forecast scenarios (extensive
+    form): one shared first-stage schedule, per-scenario recourse with penalised
+    soft-constraint violations. Contrasts the hedged schedule with the
+    deterministic one and reports the classic diagnostics — VSS (value of the
+    stochastic solution), EVPI (expected value of perfect information),
+    violation probabilities of both schedules, per-hour spread of the
+    scenario-optimal (wait-and-see) schedules, and which hard constraints bind
+    in wet versus dry scenarios. Answers "what should we do under uncertainty,
+    why does it differ from the deterministic plan, and is it worth it?".
+    """
+    start_time = time.time()
+    queried_model_dict = models_dict[queried_model]
+
+    if queried_model_dict['model status'] in [TerminationCondition.infeasible,
+                                              TerminationCondition.infeasibleOrUnbounded]:
+        feedback = ("Error: The model is infeasible; there is no deterministic solution to hedge against. "
+                    "Restore feasibility first (e.g. with feasibility_restoration).")
+        return "Feedback from internal tools: \n" + feedback
+
+    param_name, candidates = _uncertain_parameter_name(queried_model_dict, queried_components)
+    if param_name is None:
+        feedback = ("Error: Could not determine which forecast parameter is uncertain. "
+                    f"Ask the user (or infer from the query) which one of these indexed parameters "
+                    f"should be treated as uncertain and query again: {candidates}.")
+        return "Feedback from internal tools: \n" + feedback
+
+    n_scenarios = int(n_scenarios)
+    base = queried_model_dict['model class'].clone()
+    first_stage = _first_stage_variable_names(base, queried_model_dict, queried_components)
+    if any(vardata.value is None
+           for name in first_stage for vardata in getattr(base, name).values()):
+        _solve_quietly(base)
+    sense = _active_objective(base).sense
+    deterministic_schedule = {name: {idx: pe.value(getattr(base, name)[idx])
+                                     for idx in getattr(base, name)}
+                              for name in first_stage}
+
+    template = base.clone()
+    records = _soften_recourse_constraints(template, first_stage, violation_penalty)
+    binding_candidates = _binding_candidates(template)
+    forecast = [pe.value(getattr(base, param_name)[idx])
+                for idx in _trajectory_indexes(getattr(base, param_name))]
+    rng = np.random.default_rng(seed)
+    scenarios = _ar1_lognormal_scenarios(forecast, n_scenarios, phi, sigma_eps, rng)
+
+    # wet/dry terciles by total realised forecast over the horizon
+    totals = scenarios.sum(axis=1)
+    order = np.argsort(totals)
+    tercile = n_scenarios // 3
+    dry_set = set(order[:tercile].tolist())
+    wet_set = set(order[-tercile:].tolist()) if tercile else set()
+
+    # --- EEV: the deterministic schedule evaluated against the scenarios -----
+    eev_model = template.clone()
+    for name in first_stage:
+        var = getattr(eev_model, name)
+        for idx in var:
+            var[idx].fix(deterministic_schedule[name][idx])
+    eev_scenarios = _evaluate_fixed_schedule(eev_model, param_name, scenarios, records, tol)
+    eev_stats = _violation_statistics(eev_scenarios)
+    eev = eev_stats['expected_cost']
+
+    # --- WS: per-scenario wait-and-see optima (free first stage) -------------
+    ws_model = template.clone()
+    ws_objective = _active_objective(ws_model)
+    ws_costs, ws_schedules = [], []
+    binding_counts = {c['label']: {'all': 0, 'wet': 0, 'dry': 0} for c in binding_candidates}
+    primary_var = first_stage[0]
+    primary_indexes = _trajectory_indexes(getattr(ws_model, primary_var))
+    for s, path in enumerate(scenarios):
+        _set_trajectory(ws_model, param_name, path)
+        if _solve_quietly(ws_model) != TerminationCondition.optimal:
+            continue
+        ws_costs.append(pe.value(ws_objective))
+        ws_schedules.append([pe.value(getattr(ws_model, primary_var)[idx]) for idx in primary_indexes])
+        for candidate in binding_candidates:
+            if _is_binding(ws_model, candidate, tol):
+                binding_counts[candidate['label']]['all'] += 1
+                if s in wet_set:
+                    binding_counts[candidate['label']]['wet'] += 1
+                elif s in dry_set:
+                    binding_counts[candidate['label']]['dry'] += 1
+    ws = float(np.mean(ws_costs)) if ws_costs else float('nan')
+
+    # --- RP: the extensive form (shared first stage, scenario blocks) --------
+    ef = pe.ConcreteModel(name=f"extensive_form_{queried_model}")
+    ef.scen = pe.Block(range(n_scenarios))
+    scenario_objectives = []
+    for s in range(n_scenarios):
+        sub = template.clone()
+        _set_trajectory(sub, param_name, scenarios[s])
+        ef.scen[s].transfer_attributes_from(sub)
+        obj_s = next(ef.scen[s].component_objects(pe.Objective))
+        obj_s.deactivate()
+        scenario_objectives.append(obj_s.expr)
+    ef.nonanticipativity = pe.ConstraintList()
+    for name in first_stage:
+        reference = getattr(ef.scen[0], name)
+        for s in range(1, n_scenarios):
+            other = getattr(ef.scen[s], name)
+            for idx in reference:
+                ef.nonanticipativity.add(other[idx] == reference[idx])
+    ef.expected_cost = pe.Objective(expr=sum(scenario_objectives) / n_scenarios, sense=sense)
+    ef_termination = _solve_quietly(ef, time_limit=300)
+    if ef_termination not in [TerminationCondition.optimal, TerminationCondition.maxTimeLimit]:
+        feedback = (f"Error: The two-stage extensive form could not be solved ({ef_termination}). "
+                    f"Try fewer scenarios (n_scenarios) or check the model.")
+        return "Feedback from internal tools: \n" + feedback
+    rp = pe.value(ef.expected_cost)
+    hedged_schedule = {name: {idx: pe.value(getattr(ef.scen[0], name)[idx])
+                              for idx in getattr(ef.scen[0], name)}
+                       for name in first_stage}
+
+    # --- risk of the hedged schedule under the SAME scenarios ----------------
+    hedged_model = template.clone()
+    for name in first_stage:
+        var = getattr(hedged_model, name)
+        for idx in var:
+            var[idx].fix(hedged_schedule[name][idx])
+    hedged_scenarios = _evaluate_fixed_schedule(hedged_model, param_name, scenarios, records, tol)
+    hedged_stats = _violation_statistics(hedged_scenarios)
+
+    if sense == pe.minimize:
+        vss, evpi = eev - rp, rp - ws
+    else:
+        vss, evpi = rp - eev, ws - rp
+
+    # deterministic-schedule violation rate, wet vs dry terciles
+    def _tercile_violation_rate(per_scenario, member_set):
+        member = [r for s, r in enumerate(per_scenario) if s in member_set and r['solved']]
+        return (sum(1 for r in member if r['violations']) / len(member)) if member else float('nan')
+
+    det_wet_rate = _tercile_violation_rate(eev_scenarios, wet_set)
+    det_dry_rate = _tercile_violation_rate(eev_scenarios, dry_set)
+
+    # per-hour comparison table for the primary first-stage variable
+    ws_array = np.array(ws_schedules) if ws_schedules else np.zeros((0, len(primary_indexes)))
+    schedule_lines = [f"    {'idx':>5} | {'deterministic':>13} | {'hedged':>10} | WS p10-p90"]
+    for j, idx in enumerate(primary_indexes):
+        det_value = deterministic_schedule[primary_var][idx]
+        hedged_value = hedged_schedule[primary_var][idx]
+        if ws_array.size:
+            p10, p90 = np.percentile(ws_array[:, j], [10, 90])
+            spread = f"{p10:8.3f} - {p90:8.3f}"
+        else:
+            spread = "n/a"
+        schedule_lines.append(f"    {str(idx):>5} | {det_value:13.3f} | {hedged_value:10.3f} | {spread}")
+    det_total = sum(deterministic_schedule[primary_var].values())
+    hedged_total = sum(hedged_schedule[primary_var].values())
+
+    binding_lines = []
+    n_ws = len(ws_costs)
+    for label, counts in sorted(binding_counts.items(), key=lambda kv: kv[1]['all'], reverse=True):
+        if counts['all'] == 0:
+            continue
+        wet_share = counts['wet'] / max(len(wet_set), 1)
+        dry_share = counts['dry'] / max(len(dry_set), 1)
+        binding_lines.append(f"    {label}: binding in {counts['all'] / n_ws:.0%} of scenario optima "
+                             f"(wet tercile {wet_share:.0%}, dry tercile {dry_share:.0%})")
+        if len(binding_lines) >= 10:
+            break
+
+    duration = time.time() - start_time
+    time_limit_note = (" NOTE: the extensive form hit the time limit; the hedged schedule is the best "
+                       "feasible one found, not proven optimal." if ef_termination == TerminationCondition.maxTimeLimit else "")
+
+    feedback = (
+        f"Two-stage stochastic (hedging) analysis of {queried_model}.\n"
+        f"Provenance — every number below comes from exactly this computation: uncertain parameter "
+        f"{param_name}, AR(1) log-normal scenarios around the deterministic forecast (phi={phi}, "
+        f"sigma_eps={sigma_eps}, mean-preserving), {n_scenarios} scenarios, seed {seed}; first-stage "
+        f"(here-and-now) variables {first_stage}; violation penalty {violation_penalty:g} per unit; "
+        f"solver Gurobi; runtime {duration:.1f}s.{time_limit_note}\n\n"
+        f"1. Stochastic-programming diagnostics (objective units of the model, penalty included):\n"
+        f"    RP  (two-stage optimum, hedged schedule):        {rp:.6g}\n"
+        f"    EEV (deterministic schedule under uncertainty):  {eev:.6g}\n"
+        f"    WS  (average of per-scenario perfect-forecast optima): {ws:.6g}\n"
+        f"    VSS = EEV - RP = {vss:.6g}  -> what using the hedged schedule instead of the "
+        f"deterministic one is worth on average.\n"
+        f"    EVPI = RP - WS = {evpi:.6g}  -> what a perfect forecast would be worth on top of hedging.\n\n"
+        f"2. Risk comparison under the SAME {n_scenarios} scenarios:\n"
+        f"    deterministic schedule: violates a (soft) limit in {eev_stats['p_violation']:.1%} of scenarios "
+        f"(wet tercile {det_wet_rate:.1%}, dry tercile {det_dry_rate:.1%})\n"
+        f"    hedged schedule:        violates a (soft) limit in {hedged_stats['p_violation']:.1%} of scenarios\n\n"
+        f"3. Schedules, {primary_var} per index (deterministic vs hedged; WS spread = 10th-90th "
+        f"percentile of the {n_ws} per-scenario optima — wide spread means that hour is "
+        f"scenario-dependent):\n" + "\n".join(schedule_lines) + "\n"
+        f"    totals: deterministic {det_total:.3f}, hedged {hedged_total:.3f}\n\n"
+        f"4. Hard constraints binding in the per-scenario optima (why the hedged schedule acts early: "
+        f"if a capacity binds in wet scenarios, reacting later is impossible):\n"
+        + ("\n".join(binding_lines) if binding_lines else "    (none binding)") + "\n\n"
+        f"Guidance for the explainer: explain the hedged schedule by (a) pointing to the indexes where "
+        f"it differs most from the deterministic one, (b) linking the extra/earlier action to the "
+        f"violation frequencies and to capacity constraints that bind in wet scenarios, and (c) "
+        f"quantifying whether it is worth it with VSS (and EVPI for 'what would a better forecast be "
+        f"worth'). Every quantitative claim about uncertainty MUST come from the numbers above.\n"
+    )
     return "Feedback from internal tools: \n" + feedback
 
 

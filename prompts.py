@@ -31,6 +31,21 @@ Example: "Why are other solutions not better than this one"
 Example: "Show me alternative pumping schedules and how much worse they are"
 [component name] category: variables (optional). Name the decision variables the user is interested in to focus the comparison; if none are given, all variables are compared.
 """
+scenario_risk_assessment_fn_description = """
+Use when: The model is feasible/optimal and the user asks how robust or risky the current (deterministic) optimal solution is when a forecast parameter is uncertain — whether the plan still works if the realisation is worse than forecast, how often limits would be violated, or when/where things go wrong. This tool samples AR(1) log-normal scenarios around the deterministic forecast, holds the first-stage schedule fixed at the incumbent optimum, re-optimises the recourse per scenario, and reports violation probabilities (with confidence interval), where/when violations concentrate, and the worst case.
+Example: "If we run this schedule and the inflow turns out wetter than forecast, do we flood, and when?"
+Example: "How likely is it that the storage limit is exceeded if the inflow forecast is wrong?"
+Example: "How robust is the optimal pumping schedule to uncertainty in the [component name]?"
+[component name] category: parameters (the uncertain forecast parameter, e.g. the inflow); optionally variables (the schedule to hold fixed — defaults to the decision variables in the objective).
+"""
+stochastic_hedging_analysis_fn_description = """
+Use when: The model is feasible/optimal and the user asks what they SHOULD do given forecast uncertainty, why a robust/hedged plan differs from the deterministic plan, or whether planning for uncertainty is worth it. This tool solves a two-stage stochastic program (extensive form) over AR(1) log-normal scenarios around the deterministic forecast and reports: the hedged first-stage schedule vs the deterministic one, violation probabilities of both under the same scenarios, which hard constraints bind in wet vs dry scenarios, the value of the stochastic solution (VSS) and the expected value of perfect information (EVPI).
+Example: "What schedule should we use if the inflow is uncertain?"
+Example: "Why would a robust schedule pump more (or earlier) than the optimal one?"
+Example: "Is it worth planning for uncertainty instead of just using the average forecast?"
+Example: "What would a perfect forecast of the [component name] be worth?"
+[component name] category: parameters (the uncertain forecast parameter, e.g. the inflow); optionally variables (the first-stage schedule variables — defaults to the decision variables in the objective).
+"""
 
 
 def get_prompts(prompt):
@@ -101,19 +116,10 @@ HARDNESS classes for constraints (how breakable the requirement is in the real w
 * artifact-logic — logical switching (Big-M) or bookkeeping constraints; 'violating' them has no physical meaning.
 """
 
-    if INTERPRETATION_STYLE == 'embedded':
-        interpretation_classification_rules = """- For every parameter, END its description with an adjustability tag in exactly this format: "(adjustability: <class> — <very short reason>)", where <class> MUST be one of: operational, forecast, infrastructural, physical, artifact.
-- For every constraint, END its description with a hardness tag in exactly this format: "(hardness: <class> — <very short reason>)", where <class> MUST be one of: physical-law, infrastructure-limit, operational-limit, policy-target, artifact-logic.
-- Use 'name' and 'description' as the keys, and provide the name and description of the component as the values.
-""" + interpretation_taxonomy
-    elif INTERPRETATION_STYLE == 'structured':
-        interpretation_classification_rules = """- For every parameter, additionally fill in the 'adjustability' key with EXACTLY one of: operational, forecast, infrastructural, physical, artifact. Keep the description itself free of this classification.
+    interpretation_classification_rules = """- For every parameter, additionally fill in the 'adjustability' key with EXACTLY one of: operational, forecast, infrastructural, physical, artifact. Keep the description itself free of this classification.
 - For every constraint, additionally fill in the 'hardness' key with EXACTLY one of: physical-law, infrastructure-limit, operational-limit, policy-target, artifact-logic. Keep the description itself free of this classification.
 - Use 'name' and 'description' as the keys for every component (plus 'adjustability' for parameters and 'hardness' for constraints), and provide the values accordingly.
 """ + interpretation_taxonomy
-    else:
-        interpretation_classification_rules = """- Use 'name' and 'description' as the keys, and provide the name and description of the component as the values.
-"""
 
     model_interpretation_prompt = """
 You are an operations research expert specializing in water management optimization, and your role is to use PLAIN ENGLISH to interpret an optimization model written in Pyomo.
@@ -266,7 +272,20 @@ Example: "Why are the other solutions not better than this one"
 Example: "Show me the alternative solutions for [component name] and how much worse they are"
 [component name] category: variables (optional; leave empty to compare all variables).
 
-6. external_tools:
+6. scenario_risk_assessment:
+Use when: The model is feasible/optimal and the user asks how ROBUST or RISKY the current optimal solution is when a forecast parameter is uncertain (without asking for a new plan). The tool keeps the current schedule fixed, samples scenarios of the uncertain forecast around its deterministic value, and reports how often and where limits get violated, plus the worst case.
+Example: "If we run this schedule and the [component name] turns out worse than forecast, do we violate the limits, and when?"
+Example: "How likely is a violation if the forecast for [component name] is wrong?"
+[component name] category: parameters (the uncertain forecast parameter); optionally variables (the schedule to hold fixed).
+
+7. stochastic_hedging_analysis:
+Use when: The model is feasible/optimal and the user asks what they SHOULD do given an uncertain forecast, why a robust/hedged plan differs from the deterministic optimal plan, or whether hedging against uncertainty is worth it (value of the stochastic solution, value of a perfect forecast). The tool solves a two-stage stochastic program over sampled scenarios and contrasts the hedged schedule with the deterministic one.
+Example: "What schedule should we use if [component name] is uncertain?"
+Example: "Why would a robust plan differ from the optimal plan, and is it worth it?"
+Example: "What would a perfect forecast of [component name] be worth?"
+[component name] category: parameters (the uncertain forecast parameter); optionally variables (the first-stage schedule variables).
+
+8. external_tools:
 Use when: The user doubts the model's optimal solution and provides a counterexample, or asks an open-ended what-if / why-not question that can only be answered by adding NEW constraints to the model and re-solving it (rather than just reading or changing an existing [component name] value). Use this instead of alternative_solutions (5) whenever the question requires imposing a condition the current model does not contain.
 Example: “Why is it not recommended to have [component name] lower than 400 in the optimal solution”
 Example: "Why isn't [component name] and [component name] both used in the optimal scenario"
@@ -740,6 +759,10 @@ def old_get_fn_json(fn_name):
         fn_json_template["function"]["description"] += components_retrival_fn_description
     elif fn_name == "alternative_solutions":
         fn_json_template["function"]["description"] += alternative_solutions_fn_description
+    elif fn_name == "scenario_risk_assessment":
+        fn_json_template["function"]["description"] += scenario_risk_assessment_fn_description
+    elif fn_name == "stochastic_hedging_analysis":
+        fn_json_template["function"]["description"] += stochastic_hedging_analysis_fn_description
     elif fn_name == "evaluate_modification":
         fn_delta_json_template["function"]["description"] += evaluate_modification_fn_description
         return fn_delta_json_template
@@ -1165,6 +1188,10 @@ def get_fn_json(fn_name, mode):
         fn_json_template["function"]["description"] += components_retrival_fn_description
     elif fn_name == "alternative_solutions":
         fn_json_template["function"]["description"] += alternative_solutions_fn_description
+    elif fn_name == "scenario_risk_assessment":
+        fn_json_template["function"]["description"] += scenario_risk_assessment_fn_description
+    elif fn_name == "stochastic_hedging_analysis":
+        fn_json_template["function"]["description"] += stochastic_hedging_analysis_fn_description
     elif fn_name == "evaluate_modification":
         fn_delta_json_template["function"]["description"] += evaluate_modification_fn_description
         return fn_delta_json_template
