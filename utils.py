@@ -31,7 +31,7 @@ from agents import Interpreter, Coordinator, Explainer, Engineer
 # API or any OpenAI-compatible endpoint. Nebula (the VU's self-hosted platform)
 # is OpenAI-compatible, so we reach it with the `openai` client plus a base_url.
 NEBULA_BASE_URL = os.environ.get("NEBULA_BASE_URL", "https://nebula.cs.vu.nl/api")
-NEBULA_MODELS = ["FAST.gpt-oss:120b", "SURF.gpt-oss-120b", "FAST.gemma3:12b", "llama3.1:8b"]
+NEBULA_MODELS = ["FAST.gpt-oss:120b", "FAST.gemma4:31b", "FAST.gemma3:12b", "llama3.1:8b", "SURF.Qwen3.5 122B A10B NVFP4"]
 CLAUDE_MODELS = ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"]
 
 
