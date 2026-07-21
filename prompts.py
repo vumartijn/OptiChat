@@ -31,6 +31,20 @@ Example: "Why are other solutions not better than this one"
 Example: "Show me alternative pumping schedules and how much worse they are"
 [component name] category: variables (optional). Name the decision variables the user is interested in to focus the comparison; if none are given, all variables are compared.
 """
+uncertainty_level_property = {
+    "type": "string",
+    "enum": ["low", "moderate", "high"],
+    "description": (
+        "How uncertain the user says the forecast is, classified from THEIR wording. "
+        "'low' for 'a bit / slightly / a small amount of' uncertainty; "
+        "'moderate' when the user just says 'uncertain' without qualifying it, or says 'some'; "
+        "'high' for 'a lot / very uncertain / much more rain than expected / storm'. "
+        "Return only one of these three labels — never a number. The tool maps the label to "
+        "the documented noise magnitude; you must NOT invent statistical parameters yourself. "
+        "Defaults to 'moderate' if the user gives no indication."
+    ),
+}
+
 scenario_risk_assessment_fn_description = """
 Use when: The model is feasible/optimal and the user asks how robust or risky the current (deterministic) optimal solution is when a forecast parameter is uncertain — whether the plan still works if the realisation is worse than forecast, how often limits would be violated, or when/where things go wrong. This tool samples AR(1) log-normal scenarios around the deterministic forecast, holds the first-stage schedule fixed at the incumbent optimum, re-optimises the recourse per scenario, and reports violation probabilities (with confidence interval), where/when violations concentrate, and the worst case.
 Example: "If we run this schedule and the inflow turns out wetter than forecast, do we flood, and when?"
@@ -1190,6 +1204,8 @@ def get_fn_json(fn_name, mode):
         fn_json_template["function"]["description"] += alternative_solutions_fn_description
     elif fn_name == "scenario_risk_assessment":
         fn_json_template["function"]["description"] += scenario_risk_assessment_fn_description
+        fn_json_template["function"]["parameters"]["properties"]["uncertainty_level"] = \
+            uncertainty_level_property
     elif fn_name == "stochastic_hedging_analysis":
         fn_json_template["function"]["description"] += stochastic_hedging_analysis_fn_description
     elif fn_name == "evaluate_modification":

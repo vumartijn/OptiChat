@@ -949,17 +949,25 @@ def _first_stage_variable_names(model, queried_model_dict, queried_components):
     the set of decision variables that appear in the objective (the cost-bearing
     controls, e.g. Q_pump), everything else being recourse/state.
     """
-    names = []
+    obj = _active_objective(model)
+    objective_vars = list(dict.fromkeys(
+        v.parent_component().name for v in identify_variables(obj.expr, include_fixed=True)))
+    # A first-stage decision is a CONTROL the operator commits to before the
+    # uncertainty is realised — in these cost-minimising models exactly the
+    # variables the objective pays for (e.g. Q_pump). Variables the user names in
+    # the query normally identify the RISK they are asking about (e.g. H_storage
+    # in a flooding question), NOT a control to freeze: fixing a state variable
+    # across scenarios forces the mass balance to absorb every extra unit of
+    # inflow into the remaining flows, which makes wet scenarios infeasible for
+    # the wrong reason. So only honour named variables that are objective controls.
+    named = []
     for component in (queried_components or []):
         name = component.get('component_name')
-        if name is not None and get_component_type(name, queried_model_dict) == 'variables':
-            names.append(name)
-    names = list(dict.fromkeys(names))
-    if not names:
-        obj = _active_objective(model)
-        names = list(dict.fromkeys(
-            v.parent_component().name for v in identify_variables(obj.expr, include_fixed=True)))
-    return names
+        if name is not None and get_component_type(name, queried_model_dict) == 'variables' \
+                and name in objective_vars:
+            named.append(name)
+    named = list(dict.fromkeys(named))
+    return named if named else objective_vars
 
 
 def _uncertain_parameter_name(queried_model_dict, queried_components):
@@ -1140,16 +1148,34 @@ def _format_violation_block(stats, n_solved, max_lines=12):
     return "\n".join(lines) if lines else "    (none)"
 
 
+# How uncertain the forecast is, as the user phrased it. The LLM only picks the
+# LABEL; the numbers live here so they are documented, reproducible and auditable
+# rather than invented per call.
+UNCERTAINTY_LEVELS = {
+    'low':      {'sigma_eps': 0.15, 'phrasing': '"a bit", "slightly", "small" uncertainty'},
+    'moderate': {'sigma_eps': 0.30, 'phrasing': 'unspecified or "some" uncertainty'},
+    'high':     {'sigma_eps': 0.50, 'phrasing': '"a lot", "very uncertain", storm conditions'},
+}
+
+# AR(1) persistence of the forecast error. This describes how strongly wet/dry
+# hours cluster in the catchment — a property of the weather, NOT of how uncertain
+# the user says the forecast is — so it is a fixed documented constant and is
+# deliberately NOT selectable by the LLM (only sigma_eps varies with the level).
+PHI_PERSISTENCE = 0.8
+
+
 def scenario_risk_assessment(queried_components: List[Dict], queried_model, models_dict,
-                             n_scenarios: int = 200, phi: float = 0.8, sigma_eps: float = 0.3,
-                             violation_penalty: float = 1.0e6, seed: int = 2026, tol: float = 1e-5):
-    """Monte-Carlo stress test of the incumbent optimal solution under forecast
-    uncertainty. The first-stage schedule is held fixed at the deterministic
-    optimum; the uncertain forecast parameter is resampled per scenario; only
-    the recourse (state) variables re-optimise. Reports the probability of
-    violating soft constraints, where/when violations concentrate, and the
-    worst case — everything the Explainer needs for "does this plan still work
-    if the forecast is wrong?" questions.
+                             uncertainty_level: str = 'moderate',
+                             n_scenarios: int = 200, seed: int = 2026):
+    """Monte-Carlo stress test of the committed schedule under forecast uncertainty.
+
+    The first-stage schedule is held FIXED at the deterministic optimum, the
+    uncertain forecast parameter is resampled per scenario, and every constraint
+    of the model stays HARD. A scenario in which the model is then infeasible is
+    one in which the committed schedule cannot be operated at all — for a water
+    model that is exactly the flooding case. The tool therefore reports the
+    fraction of scenarios in which the plan fails, over the FULL set of sampled
+    scenarios (never a filtered denominator).
     """
     start_time = time.time()
     queried_model_dict = models_dict[queried_model]
@@ -1159,6 +1185,12 @@ def scenario_risk_assessment(queried_components: List[Dict], queried_model, mode
         feedback = ("Error: The model is infeasible, so there is no incumbent schedule to stress-test. "
                     "Restore feasibility first (e.g. with feasibility_restoration).")
         return "Feedback from internal tools: \n" + feedback
+
+    level = str(uncertainty_level or 'moderate').strip().lower()
+    if level not in UNCERTAINTY_LEVELS:
+        level = 'moderate'
+    sigma_eps = UNCERTAINTY_LEVELS[level]['sigma_eps']
+    phi = PHI_PERSISTENCE
 
     param_name, candidates = _uncertain_parameter_name(queried_model_dict, queried_components)
     if param_name is None:
@@ -1170,60 +1202,84 @@ def scenario_risk_assessment(queried_components: List[Dict], queried_model, mode
     model = queried_model_dict['model class'].clone()
     first_stage = _first_stage_variable_names(model, queried_model_dict, queried_components)
 
-    # make sure the incumbent solution is loaded before fixing the schedule
+    # make sure the incumbent solution is loaded before committing to the schedule
     if any(vardata.value is None
            for name in first_stage for vardata in getattr(model, name).values()):
         _solve_quietly(model)
-    deterministic_objective = pe.value(_active_objective(model))
     for name in first_stage:
         getattr(model, name).fix()
 
-    records = _soften_recourse_constraints(model, first_stage, violation_penalty)
     forecast = [pe.value(getattr(model, param_name)[idx])
                 for idx in _trajectory_indexes(getattr(model, param_name))]
+    n_scenarios = int(n_scenarios)
     rng = np.random.default_rng(seed)
-    scenarios = _ar1_lognormal_scenarios(forecast, int(n_scenarios), phi, sigma_eps, rng)
+    scenarios = _ar1_lognormal_scenarios(forecast, n_scenarios, phi, sigma_eps, rng)
 
-    per_scenario = _evaluate_fixed_schedule(model, param_name, scenarios, records, tol)
-    stats = _violation_statistics(per_scenario)
-    if stats['n_solved'] == 0:
-        feedback = ("Error: None of the scenario evaluations solved. "
-                    "This usually means the model has no softenable state constraints, "
-                    "so fixed-schedule scenarios are infeasible outright.")
-        return "Feedback from internal tools: \n" + feedback
+    # Replay the committed schedule against every scenario with all limits hard.
+    feasible_idx, infeasible_idx, unknown = [], [], []
+    for s, path in enumerate(scenarios):
+        _set_trajectory(model, param_name, path)
+        termination = _solve_quietly(model)
+        if termination == TerminationCondition.optimal:
+            feasible_idx.append(s)
+        elif termination in (TerminationCondition.infeasible,
+                             TerminationCondition.infeasibleOrUnbounded):
+            infeasible_idx.append(s)
+        else:
+            unknown.append((s, str(termination)))
+
+    n_fail = len(infeasible_idx)
+    p_fail = n_fail / n_scenarios
+    half_width = 1.96 * np.sqrt(p_fail * (1.0 - p_fail) / n_scenarios)
+
+    # How wet does it have to get? Grounded, IIS-free explanation of the driver.
+    totals = scenarios.sum(axis=1)
+    forecast_total = float(np.sum(forecast))
+    ok_totals = totals[feasible_idx] if feasible_idx else np.array([])
+    bad_totals = totals[infeasible_idx] if infeasible_idx else np.array([])
+    if bad_totals.size and ok_totals.size:
+        driver_line = (
+            f"- the failures are the wet scenarios: scenarios in which the plan holds have a total "
+            f"{param_name} of {ok_totals.mean():.1f} on average (max {ok_totals.max():.1f}), while the "
+            f"failing ones average {bad_totals.mean():.1f} (min {bad_totals.min():.1f}); the "
+            f"deterministic forecast total is {forecast_total:.1f}\n")
+    else:
+        driver_line = (f"- deterministic forecast total {param_name} = {forecast_total:.1f}; "
+                       f"sampled totals ranged {totals.min():.1f} to {totals.max():.1f}\n")
+
+    unknown_line = ""
+    if unknown:
+        reasons = sorted({r for _s, r in unknown})
+        unknown_line = (
+            f"- CAUTION: {len(unknown)} of {n_scenarios} scenarios returned neither optimal nor "
+            f"infeasible ({', '.join(reasons)}); they are counted as NOT failing, so the reported "
+            f"probability is a lower bound (upper bound {(n_fail + len(unknown)) / n_scenarios:.3f})\n")
 
     duration = time.time() - start_time
-    worst = stats['worst']
-    worst_line = "    (no violation in any scenario)"
-    if worst is not None and worst['violations']:
-        top_label, top_value = max(worst['violations'], key=lambda lv: lv[1])
-        worst_line = (f"    total violation {worst['total_violation']:.4g} "
-                      f"(largest single exceedance: {top_label} by {top_value:.4g})")
-    failed_note = (f" ({stats['n_failed']} scenario(s) failed to solve and were excluded)"
-                   if stats['n_failed'] else "")
-
     feedback = (
-        f"Scenario-based risk assessment of {queried_model} (Monte-Carlo stress test).\n"
-        f"Provenance — every number below comes from exactly this computation: "
-        f"uncertain parameter {param_name} resampled with AR(1) log-normal multiplicative noise "
-        f"around its current deterministic forecast (phi={phi}, sigma_eps={sigma_eps}, mean-preserving), "
-        f"{int(n_scenarios)} scenarios, seed {seed}; first-stage schedule {first_stage} held FIXED at the "
-        f"incumbent optimal solution; recourse re-optimised per scenario (Gurobi); "
-        f"soft-constraint violation penalty {violation_penalty:g} per unit; runtime {duration:.1f}s.\n\n"
-        f"Results over {stats['n_solved']} solved scenarios{failed_note}:\n"
-        f"- probability that the fixed schedule violates at least one (soft) limit: "
-        f"{stats['p_violation']:.3f} (95% CI +/- {stats['ci_half_width']:.3f})\n"
-        f"- where the violations concentrate (share of scenarios; softened limits only):\n"
-        f"{_format_violation_block(stats, stats['n_solved'])}\n"
-        f"- worst sampled scenario:\n{worst_line}\n"
-        f"- expected cost incl. violation penalty: {stats['expected_cost']:.6g} "
-        f"(deterministic optimal objective was {deterministic_objective:.6g}; the difference is the "
-        f"expected price of forecast uncertainty under this fixed schedule)\n\n"
-        f"Guidance for the explainer: answer the user's risk question with these frequencies and "
-        f"locations (constraint/bound names map to physical limits via their descriptions). "
-        f"Every quantitative claim about uncertainty MUST come from the numbers above — do not "
-        f"extrapolate beyond them. If the user asks what to do about the risk, suggest querying the "
-        f"hedged schedule (stochastic_hedging_analysis).\n"
+        f"Scenario-based risk assessment of {queried_model} (Monte-Carlo stress test of the committed schedule).\n"
+        f"Provenance — every number below comes from exactly this computation: uncertain parameter "
+        f"{param_name} resampled with AR(1) log-normal multiplicative noise around its current "
+        f"deterministic forecast; uncertainty level '{level}' ({UNCERTAINTY_LEVELS[level]['phrasing']}) "
+        f"-> sigma_eps={sigma_eps}, phi={phi} (fixed constant, not selectable); the noise is "
+        f"MEAN-PRESERVING, so scenarios are not biased wet — they spread symmetrically in log space "
+        f"around the same expected forecast; {n_scenarios} scenarios, seed {seed}; first-stage schedule "
+        f"{first_stage} held FIXED at the incumbent optimal solution; ALL model constraints kept HARD "
+        f"(no penalties, no relaxation); solver Gurobi; runtime {duration:.1f}s.\n\n"
+        f"Results over all {n_scenarios} sampled scenarios (nothing excluded):\n"
+        f"- the committed schedule admits NO feasible operation in {n_fail} of {n_scenarios} scenarios "
+        f"= {p_fail:.3f} (95% CI +/- {half_width:.3f})\n"
+        f"- it can be operated within every limit in the remaining {len(feasible_idx)} scenarios\n"
+        f"{driver_line}"
+        f"{unknown_line}"
+        f"\nGuidance for the explainer: 'no feasible operation' means that with this schedule committed "
+        f"there is NO admissible way to run the remaining structures within the model's physical limits "
+        f"— for a water model that is the flooding case (the storage limit cannot be respected). Report "
+        f"{p_fail:.3f} as the probability the plan fails, state the uncertainty level it assumes, and use "
+        f"the model's own component descriptions to say which physical limit is at stake. The tool "
+        f"deliberately does NOT identify the hour of failure — do not invent timing, magnitudes, or "
+        f"return periods. Every quantitative claim MUST come from the numbers above. If the user asks "
+        f"what to do about the risk, suggest the hedged schedule (stochastic_hedging_analysis).\n"
     )
     return "Feedback from internal tools: \n" + feedback
 

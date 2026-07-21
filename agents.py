@@ -961,7 +961,11 @@ class Engineer(Agent):
                 elif fn_name == 'alternative_solutions':
                     fn_output = alternative_solutions(self.queried_components, self.queried_model, models_dict)
                 elif fn_name == 'scenario_risk_assessment':
-                    fn_output = scenario_risk_assessment(self.queried_components, self.queried_model, models_dict)
+                    # the LLM classifies how uncertain the user says the forecast is;
+                    # the numeric noise magnitude lives in internal_tools, not here
+                    uncertainty_level = json.loads(fn_args).get("uncertainty_level", "moderate")
+                    fn_output = scenario_risk_assessment(self.queried_components, self.queried_model,
+                                                         models_dict, uncertainty_level=uncertainty_level)
                 elif fn_name == 'stochastic_hedging_analysis':
                     fn_output = stochastic_hedging_analysis(self.queried_components, self.queried_model, models_dict)
                 else:
