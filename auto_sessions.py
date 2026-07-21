@@ -22,7 +22,7 @@ import os
 import datetime
 
 from extractor import initial_loading, update_model_representation
-from utils import get_agents, OptiChat_workflow_exp, make_client, default_model
+from utils import get_agents, OptiChat_workflow_exp, make_client, default_model, get_provider
 from pyomo.opt import TerminationCondition
 from dotenv import load_dotenv, find_dotenv
 
@@ -36,13 +36,16 @@ _ = load_dotenv(find_dotenv())
 # inside OptiChat.
 OPTICHAT_MODEL = "v1"
 
+# Honors the LLM_PROVIDER env var; falls back to Nebula/Claude per get_provider().
+LLM_PROVIDER = get_provider()
+
 MODEL_PATH = "Feas/mixed_integer_rtc.py"
 
-OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/chats/{OPTICHAT_MODEL}"
+OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/chats/{LLM_PROVIDER}_{OPTICHAT_MODEL}"
 
 NUM_SESSIONS = 3
 
-CLAUDE_MODEL = default_model()
+MODEL = default_model(LLM_PROVIDER)
 
 TEMPERATURE = 0.1
 
@@ -59,9 +62,11 @@ BATCH_QUESTIONS = [
 
 # Questions 6-9 are asked one at a time, building on the conversation so far.
 SEQUENTIAL_QUESTIONS = [
+    "Why is this the optimal pumping schedule?",
     "Would starting at a lower initial level have removed the need to pump?",
-    "Is it possible to get a similar solution, by pumping less at hours where I "
-    "now pump a lot, and pumping more at hours where I now pump little?",
+    "Is it possible to get a similar solution, by pumping less at hours where I now pump a lot, and pumping more at hours where I now pump little?",
+    "If we run this schedule and the forecast is a bit uncertain, how likely are we to flood?",
+    "Can we improve our pumping schedule then?",
 ]
 
 
@@ -83,7 +88,9 @@ class Args:
         self.internal_experiment = False
         self.external_experiment = False
         self.fn_names = ["feasibility_restoration", "sensitivity_analysis",
-                         "components_retrival", "evaluate_modification", "external_tools"]
+                         "components_retrival", "evaluate_modification",
+                         "alternative_solutions", "scenario_risk_assessment",
+                         "stochastic_hedging_analysis", "external_tools"]
 
 
 def process_model(args, interpreter):
@@ -175,7 +182,7 @@ def save_chat_history(session_idx, chat_history, detailed_chat_history, run_stam
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     base = f"{run_stamp}_session_{session_idx}_{OPTICHAT_MODEL}"
 
-    path = os.path.join(OUTPUT_DIR, f"2chat_history_{base}.md")
+    path = os.path.join(OUTPUT_DIR, f"{ROUND}chat_history_{base}.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n\n".join(chat_history))
     print(f"[session {session_idx}] chat history saved to {path}")
@@ -188,8 +195,8 @@ def save_chat_history(session_idx, chat_history, detailed_chat_history, run_stam
 
 def main():
     run_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    client = make_client()
-    args = Args(CLAUDE_MODEL, TEMPERATURE)
+    client = make_client(LLM_PROVIDER)
+    args = Args(MODEL, TEMPERATURE)
     agents = get_agents(args.fn_names, client, args.claude_model)
 
     for session_idx in range(1, NUM_SESSIONS + 1):
