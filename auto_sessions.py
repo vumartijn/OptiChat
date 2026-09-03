@@ -43,30 +43,29 @@ MODEL_PATH = "Feas/mixed_integer_rtc.py"
 
 OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/chats/{LLM_PROVIDER}_{OPTICHAT_MODEL}"
 
-NUM_SESSIONS = 3
+NUM_SESSIONS = 5
 
 MODEL = default_model(LLM_PROVIDER)
 
 TEMPERATURE = 0.1
 
-ROUND = 2
+ROUND = 4
 
 # Questions 1-5 are asked together in a single batch turn.
 BATCH_QUESTIONS = [
-    "What is the maximum water level the basin can hold?",
-    "Why is the orifice used in preference to the pump when both are physically possible?",
-    "How much water is pumped in total in the optimal solution?",
-    "List the hours when the pump runs and the flow at each hour.",
-    "Why is there no pumping at the start of the horizon?",
+    "1. What is the maximum water level the basin can hold?",
+    "2. Why is the orifice used in preference to the pump when both are physically possible?",
+    "3. How much water is pumped in total in the optimal solution?",
+    "4. List the hours when the pump runs and the flow at each hour.",
 ]
 
 # Questions 6-9 are asked one at a time, building on the conversation so far.
 SEQUENTIAL_QUESTIONS = [
-    "Why is this the optimal pumping schedule?",
-    "Would starting at a lower initial level have removed the need to pump?",
-    "Is it possible to get a similar solution, by pumping less at hours where I now pump a lot, and pumping more at hours where I now pump little?",
-    "If we run this schedule and the forecast is a bit uncertain, how likely are we to flood?",
-    "Can we improve our pumping schedule then?",
+    "5. Is it possible to get similar solutions, by pumping less at hours where I now pump a lot, and pumping more at hours where I now pump little?",
+    "6. Why is this the optimal pumping schedule?",
+    "7. Would starting at a lower initial level have removed the need to pump?",
+    "8. If we run the original schedule and the forecast is a bit uncertain, how likely are we to flood?",
+    "9. How can I improve my schedule such that flooding becomes less likely? Please give this schedule.",
 ]
 
 
@@ -162,18 +161,27 @@ def run_session(session_idx, args, agents):
     models_dict, messages, chat_history = process_model(args, interpreter)
     detailed_chat_history = list(chat_history)  # seed with the model-upload turn
 
-    # ---- Questions 1-5: one combined batch turn ----
-    batch_prompt = "\n".join(f"{i}. {q}" for i, q in enumerate(BATCH_QUESTIONS, start=1))
-    print(f"[session {session_idx}] asking questions 1-5 (batch)")
-    ask(args, coordinator, engineer, explainer, messages, models_dict,
-        batch_prompt, chat_history, detailed_chat_history)
-
-    # ---- Questions 6-9: asked sequentially ----
-    for offset, q in enumerate(SEQUENTIAL_QUESTIONS):
-        qnum = len(BATCH_QUESTIONS) + offset + 1
-        print(f"[session {session_idx}] asking question {qnum} (sequential)")
+    try:
+        # ---- Questions 1-5: one combined batch turn ----
+        batch_prompt = "\n".join(f"{i}. {q}" for i, q in enumerate(BATCH_QUESTIONS, start=1))
+        print(f"[session {session_idx}] asking questions 1-5 (batch)")
         ask(args, coordinator, engineer, explainer, messages, models_dict,
-            q, chat_history, detailed_chat_history)
+            batch_prompt, chat_history, detailed_chat_history)
+
+        # ---- Questions 6-9: asked sequentially ----
+        for offset, q in enumerate(SEQUENTIAL_QUESTIONS):
+            qnum = len(BATCH_QUESTIONS) + offset + 1
+            print(f"[session {session_idx}] asking question {qnum} (sequential)")
+            ask(args, coordinator, engineer, explainer, messages, models_dict,
+                q, chat_history, detailed_chat_history)
+    except Exception as e:
+        # Save whatever the session produced so far instead of losing it entirely.
+        import traceback
+        err = traceback.format_exc()
+        print(f"[session {session_idx}] ERROR during session, saving partial history: {e}")
+        note = f"[session crashed: {err}]"
+        chat_history.append(note)
+        detailed_chat_history.append(note)
 
     return chat_history, detailed_chat_history
 

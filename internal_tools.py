@@ -895,11 +895,6 @@ def alternative_solutions(queried_components: List[Dict], queried_model, models_
 #   * stochastic_hedging_analysis — two-stage stochastic program (extensive
 #     form) that produces a hedged first-stage schedule and the classic
 #     stochastic-programming diagnostics (VSS, EVPI, wet/dry contrasts).
-#
-# The scenario generator is the SAME AR(1) log-normal process as in
-# Scriptie_martijn/'stochastic approximation.py' (multiplicative noise around
-# the deterministic forecast, mean-preserving), so SPSA results obtained
-# outside OptiChat remain a valid cross-check of these tools.
 # ---------------------------------------------------------------------------
 
 def _ar1_lognormal_scenarios(forecast, n_scenarios, phi, sigma_eps, rng):
@@ -1152,9 +1147,9 @@ def _format_violation_block(stats, n_solved, max_lines=12):
 # LABEL; the numbers live here so they are documented, reproducible and auditable
 # rather than invented per call.
 UNCERTAINTY_LEVELS = {
-    'low':      {'sigma_eps': 0.15, 'phrasing': '"a bit", "slightly", "small" uncertainty'},
-    'moderate': {'sigma_eps': 0.30, 'phrasing': 'unspecified or "some" uncertainty'},
-    'high':     {'sigma_eps': 0.50, 'phrasing': '"a lot", "very uncertain", storm conditions'},
+    'low':      {'sigma_eps': 0.05, 'phrasing': '"a bit", "slightly", "small" uncertainty'},
+    'moderate': {'sigma_eps': 0.15, 'phrasing': 'unspecified or "some" uncertainty'},
+    'high':     {'sigma_eps': 0.30, 'phrasing': '"a lot", "very uncertain", storm conditions'},
 }
 
 # AR(1) persistence of the forecast error. This describes how strongly wet/dry
@@ -1163,10 +1158,34 @@ UNCERTAINTY_LEVELS = {
 # deliberately NOT selectable by the LLM (only sigma_eps varies with the level).
 PHI_PERSISTENCE = 0.8
 
+# Price of a soft-constraint violation, calibrated to match SPILL_COST in
+# "Scriptie_martijn/stochastic approximation.py" so the hedged schedule and the
+# SPSA schedule are optimised against the SAME economics.
+#
+#   SPSA:  cost = sum(q_pump) + SPILL_COST * sum(spill) + TERMINAL_COST * terminal
+#          (flow units m3/s; SPILL_COST = 5 "m3 of pumping worth spending to
+#           avoid 1 m3 of spill")
+#   MIP :  obj  = sum(Q_pump[t] * dt)                    (volume units m3)
+#
+# The MIP objective is the SPSA one times dt, so the RATIO is preserved and only
+# the units of the slack have to be converted. On the RTC water model the single
+# softened constraint is storage_upper_bound[t]: H_storage[t] <= H_storage_max,
+# so the slack is in METRES of level exceedance, and
+#
+#   1 m of level over the basin area A = 1e6 m2  ->  1e6 m3 of water
+#   charged at SPILL_COST = 5 m3-of-pumping per m3  ->  5e6 objective units per m
+#
+# hence violation_penalty = SPILL_COST * A. (The previous default 1.0e6 was
+# SPILL_COST = 1 in disguise: spill charged at exactly the pumping rate, i.e. the
+# TERMINAL_COST convention rather than the SPILL_COST one.)
+SPILL_COST = 5.0        # m3 of pumping worth spending to avoid 1 m3 of spill
+BASIN_AREA = 1.0e6      # [m2] storage area A of the RTC model; converts m of slack -> m3
+VIOLATION_PENALTY = SPILL_COST * BASIN_AREA  # 5.0e6 objective units per unit of slack
+
 
 def scenario_risk_assessment(queried_components: List[Dict], queried_model, models_dict,
                              uncertainty_level: str = 'moderate',
-                             n_scenarios: int = 200, seed: int = 2026):
+                             n_scenarios: int = 500, seed: int = 2026):
     """Monte-Carlo stress test of the committed schedule under forecast uncertainty.
 
     The first-stage schedule is held FIXED at the deterministic optimum, the
@@ -1261,8 +1280,8 @@ def scenario_risk_assessment(queried_components: List[Dict], queried_model, mode
         f"Provenance — every number below comes from exactly this computation: uncertain parameter "
         f"{param_name} resampled with AR(1) log-normal multiplicative noise around its current "
         f"deterministic forecast; uncertainty level '{level}' ({UNCERTAINTY_LEVELS[level]['phrasing']}) "
-        f"-> sigma_eps={sigma_eps}, phi={phi} (fixed constant, not selectable); the noise is "
-        f"MEAN-PRESERVING, so scenarios are not biased wet — they spread symmetrically in log space "
+        f"-> sigma_eps={sigma_eps}, phi={phi}; the noise is MEAN-PRESERVING, "
+        f"so scenarios are not biased wet — they spread symmetrically in log space "
         f"around the same expected forecast; {n_scenarios} scenarios, seed {seed}; first-stage schedule "
         f"{first_stage} held FIXED at the incumbent optimal solution; ALL model constraints kept HARD "
         f"(no penalties, no relaxation); solver Gurobi; runtime {duration:.1f}s.\n\n"
@@ -1273,20 +1292,22 @@ def scenario_risk_assessment(queried_components: List[Dict], queried_model, mode
         f"{driver_line}"
         f"{unknown_line}"
         f"\nGuidance for the explainer: 'no feasible operation' means that with this schedule committed "
-        f"there is NO admissible way to run the remaining structures within the model's physical limits "
+        f"there is no admissible way to run the remaining structures within the model's physical limits "
         f"— for a water model that is the flooding case (the storage limit cannot be respected). Report "
         f"{p_fail:.3f} as the probability the plan fails, state the uncertainty level it assumes, and use "
         f"the model's own component descriptions to say which physical limit is at stake. The tool "
-        f"deliberately does NOT identify the hour of failure — do not invent timing, magnitudes, or "
-        f"return periods. Every quantitative claim MUST come from the numbers above. If the user asks "
-        f"what to do about the risk, suggest the hedged schedule (stochastic_hedging_analysis).\n"
+        f"deliberately does not identify the hour of failure — do not invent timing, magnitudes, or "
+        f"return periods. Every quantitative claim must come from the numbers above. Do not suggest "
+        f"what to do about the risk, nor give solutions.\n"
     )
     return "Feedback from internal tools: \n" + feedback
 
 
 def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, models_dict,
-                                n_scenarios: int = 30, phi: float = PHI_PERSISTENCE, sigma_eps: float = 0.3,
-                                violation_penalty: float = 1.0e6, seed: int = 2026, tol: float = 1e-5):
+                                uncertainty_level: str = 'moderate',
+                                n_scenarios: int = 100, phi: float = PHI_PERSISTENCE,
+                                violation_penalty: float = VIOLATION_PENALTY,
+                                seed: int = 2026, tol: float = 1e-5):
     """Two-stage stochastic program over sampled forecast scenarios (extensive
     form): one shared first-stage schedule, per-scenario recourse with penalised
     soft-constraint violations. Contrasts the hedged schedule with the
@@ -1294,8 +1315,8 @@ def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, m
     stochastic solution), EVPI (expected value of perfect information),
     violation probabilities of both schedules, per-hour spread of the
     scenario-optimal (wait-and-see) schedules, and which hard constraints bind
-    in wet versus dry scenarios. Answers "what should we do under uncertainty,
-    why does it differ from the deterministic plan, and is it worth it?".
+    in the scenario optima. Answers "what should we do under uncertainty, why
+    does it differ from the deterministic plan, and is it worth it?".
     """
     start_time = time.time()
     queried_model_dict = models_dict[queried_model]
@@ -1305,6 +1326,11 @@ def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, m
         feedback = ("Error: The model is infeasible; there is no deterministic solution to hedge against. "
                     "Restore feasibility first (e.g. with feasibility_restoration).")
         return "Feedback from internal tools: \n" + feedback
+
+    level = str(uncertainty_level or 'moderate').strip().lower()
+    if level not in UNCERTAINTY_LEVELS:
+        level = 'moderate'
+    sigma_eps = UNCERTAINTY_LEVELS[level]['sigma_eps']
 
     param_name, candidates = _uncertain_parameter_name(queried_model_dict, queried_components)
     if param_name is None:
@@ -1332,13 +1358,6 @@ def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, m
     rng = np.random.default_rng(seed)
     scenarios = _ar1_lognormal_scenarios(forecast, n_scenarios, phi, sigma_eps, rng)
 
-    # wet/dry terciles by total realised forecast over the horizon
-    totals = scenarios.sum(axis=1)
-    order = np.argsort(totals)
-    tercile = n_scenarios // 3
-    dry_set = set(order[:tercile].tolist())
-    wet_set = set(order[-tercile:].tolist()) if tercile else set()
-
     # --- EEV: the deterministic schedule evaluated against the scenarios -----
     eev_model = template.clone()
     for name in first_stage:
@@ -1353,7 +1372,7 @@ def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, m
     ws_model = template.clone()
     ws_objective = _active_objective(ws_model)
     ws_costs, ws_schedules = [], []
-    binding_counts = {c['label']: {'all': 0, 'wet': 0, 'dry': 0} for c in binding_candidates}
+    binding_counts = {c['label']: 0 for c in binding_candidates}
     primary_var = first_stage[0]
     primary_indexes = _trajectory_indexes(getattr(ws_model, primary_var))
     for s, path in enumerate(scenarios):
@@ -1364,11 +1383,7 @@ def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, m
         ws_schedules.append([pe.value(getattr(ws_model, primary_var)[idx]) for idx in primary_indexes])
         for candidate in binding_candidates:
             if _is_binding(ws_model, candidate, tol):
-                binding_counts[candidate['label']]['all'] += 1
-                if s in wet_set:
-                    binding_counts[candidate['label']]['wet'] += 1
-                elif s in dry_set:
-                    binding_counts[candidate['label']]['dry'] += 1
+                binding_counts[candidate['label']] += 1
     ws = float(np.mean(ws_costs)) if ws_costs else float('nan')
 
     # --- RP: the extensive form (shared first stage, scenario blocks) --------
@@ -1414,14 +1429,6 @@ def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, m
     else:
         vss, evpi = rp - eev, ws - rp
 
-    # deterministic-schedule violation rate, wet vs dry terciles
-    def _tercile_violation_rate(per_scenario, member_set):
-        member = [r for s, r in enumerate(per_scenario) if s in member_set and r['solved']]
-        return (sum(1 for r in member if r['violations']) / len(member)) if member else float('nan')
-
-    det_wet_rate = _tercile_violation_rate(eev_scenarios, wet_set)
-    det_dry_rate = _tercile_violation_rate(eev_scenarios, dry_set)
-
     # per-hour comparison table for the primary first-stage variable
     ws_array = np.array(ws_schedules) if ws_schedules else np.zeros((0, len(primary_indexes)))
     schedule_lines = [f"    {'idx':>5} | {'deterministic':>13} | {'hedged':>10} | WS p10-p90"]
@@ -1439,13 +1446,10 @@ def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, m
 
     binding_lines = []
     n_ws = len(ws_costs)
-    for label, counts in sorted(binding_counts.items(), key=lambda kv: kv[1]['all'], reverse=True):
-        if counts['all'] == 0:
+    for label, count in sorted(binding_counts.items(), key=lambda kv: kv[1], reverse=True):
+        if count == 0:
             continue
-        wet_share = counts['wet'] / max(len(wet_set), 1)
-        dry_share = counts['dry'] / max(len(dry_set), 1)
-        binding_lines.append(f"    {label}: binding in {counts['all'] / n_ws:.0%} of scenario optima "
-                             f"(wet tercile {wet_share:.0%}, dry tercile {dry_share:.0%})")
+        binding_lines.append(f"    {label}: binding in {count / n_ws:.0%} of scenario optima")
         if len(binding_lines) >= 10:
             break
 
@@ -1456,10 +1460,13 @@ def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, m
     feedback = (
         f"Two-stage stochastic (hedging) analysis of {queried_model}.\n"
         f"Provenance — every number below comes from exactly this computation: uncertain parameter "
-        f"{param_name}, AR(1) log-normal scenarios around the deterministic forecast (phi={phi}, "
-        f"sigma_eps={sigma_eps}, mean-preserving), {n_scenarios} scenarios, seed {seed}; first-stage "
-        f"(here-and-now) variables {first_stage}; violation penalty {violation_penalty:g} per unit; "
-        f"solver Gurobi; runtime {duration:.1f}s.{time_limit_note}\n\n"
+        f"{param_name}, AR(1) log-normal scenarios around the deterministic forecast; uncertainty level "
+        f"'{level}' ({UNCERTAINTY_LEVELS[level]['phrasing']}) -> sigma_eps={sigma_eps}, phi={phi} "
+        f"(mean-preserving), {n_scenarios} scenarios, seed {seed}; first-stage "
+        f"(here-and-now) variables {first_stage}; violation penalty {violation_penalty:g} per unit of "
+        f"soft-constraint slack, which on the RTC water model is {violation_penalty / BASIN_AREA:g} m3 of "
+        f"pumping per m3 of water over the limit (the SPILL_COST convention of the SPSA reference "
+        f"implementation); solver Gurobi; runtime {duration:.1f}s.{time_limit_note}\n\n"
         f"1. Stochastic-programming diagnostics (objective units of the model, penalty included):\n"
         f"    RP  (two-stage optimum, hedged schedule):        {rp:.6g}\n"
         f"    EEV (deterministic schedule under uncertainty):  {eev:.6g}\n"
@@ -1468,8 +1475,7 @@ def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, m
         f"deterministic one is worth on average.\n"
         f"    EVPI = RP - WS = {evpi:.6g}  -> what a perfect forecast would be worth on top of hedging.\n\n"
         f"2. Risk comparison under the SAME {n_scenarios} scenarios:\n"
-        f"    deterministic schedule: violates a (soft) limit in {eev_stats['p_violation']:.1%} of scenarios "
-        f"(wet tercile {det_wet_rate:.1%}, dry tercile {det_dry_rate:.1%})\n"
+        f"    deterministic schedule: violates a (soft) limit in {eev_stats['p_violation']:.1%} of scenarios\n"
         f"    hedged schedule:        violates a (soft) limit in {hedged_stats['p_violation']:.1%} of scenarios\n\n"
         f"3. Schedules, {primary_var} per index (deterministic vs hedged; WS spread = 10th-90th "
         f"percentile of the {n_ws} per-scenario optima — wide spread means that hour is "

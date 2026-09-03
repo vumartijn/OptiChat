@@ -24,9 +24,7 @@ Example: "If the maximum storage level were **raised to 0.6 m**, how much less w
 Example: "Would the need to pump be removed if the initial storage level were **set to 0.3 m**" (specified the change is **set to 0.3 m**)
 """
 alternative_solutions_fn_description = """
-Use when: The model is feasible/optimal and the user asks why the current solution is optimal, whether other solutions exist, or why other solutions are not better. This generates near-optimal alternative solutions (counterfactuals) with Gurobi's solution pool and contrasts them with the incumbent optimal solution.
-Example: “Why is this the optimal solution”
-Example: "Are there no other solutions that achieve a similar result"
+Use when: The model is feasible/optimal and the user asks why the current solution is optimal, whether other solutions exist, or why other solutions are not better. This generates near-optimal alternative solutions (counterfactuals) with Gurobi's solution pool and contrasts them with the incumbent optimal solution. Only changes integer variables, not continuous ones.
 Example: "Why are other solutions not better than this one"
 Example: "Show me alternative pumping schedules and how much worse they are"
 [component name] category: variables (optional). Name the decision variables the user is interested in to focus the comparison; if none are given, all variables are compared.
@@ -279,9 +277,8 @@ Example: "Will the optimal value be greatly affected if we have **two more** [co
 [component name] category: parameters or variables.
 
 5. alternative_solutions:
-Use when: The model is feasible/optimal and the user asks why the current solution is optimal, whether other (equally good or comparable) solutions exist, or why the alternative solutions are not better. This tool asks Gurobi for the next-best solutions in its solution pool and contrasts each alternative (Q) against the incumbent optimal solution (P): for every alternative it reports the objective value, how much worse it is than the optimum (the "price" of that alternative), and which decision variables take different values.
-Example: “Why is this the optimal solution”
-Example: "Are there any other (near-)optimal solutions"
+Use when: The model is feasible/optimal and the user asks why the current solution is optimal, or why the alternative solutions are not better. It does not look for similar solutions. This tool asks Gurobi for the next-best solutions in its solution pool and contrasts each alternative (Q) against the incumbent optimal solution (P): for every alternative it reports the objective value, how much worse it is than the optimum (the "price" of that alternative), and which decision variables take different values. It does not calculate similar solutions.
+Example: "Why is this the optimal solution?"
 Example: "Why are the other solutions not better than this one"
 Example: "Show me the alternative solutions for [component name] and how much worse they are"
 [component name] category: variables (optional; leave empty to compare all variables).
@@ -300,9 +297,11 @@ Example: "What would a perfect forecast of [component name] be worth?"
 [component name] category: parameters (the uncertain forecast parameter); optionally variables (the first-stage schedule variables).
 
 8. external_tools:
-Use when: The user doubts the model's optimal solution and provides a counterexample, or asks an open-ended what-if / why-not question that can only be answered by adding NEW constraints to the model and re-solving it (rather than just reading or changing an existing [component name] value). Use this instead of alternative_solutions (5) whenever the question requires imposing a condition the current model does not contain.
+Use when: New solutions need to be calculated. Or if the user doubts the model's optimal solution and provides a counterexample, or asks an open-ended what-if / why-not question that can only be answered by adding new constraints to the model and re-solving it (rather than just reading or changing an existing [component name] value).
 Example: “Why is it not recommended to have [component name] lower than 400 in the optimal solution”
 Example: "Why isn't [component name] and [component name] both used in the optimal scenario"
+Example: "Is it possible to get similar solutions, by pumping less at hours where I now pump a lot, and pumping more at hours where I now pump little?"
+
 [component name] category: parameters or variables.
     
 ----- Instruction to determine the correct component name -----
@@ -442,6 +441,9 @@ for t in m.T:
 
 solver = SolverFactory('gurobi')  # only gurobi is available in env
 solver.options['TimeLimit'] = 300  # 5min time limit
+# `model` is rebuilt fresh and UNSOLVED on every execution -- re-solve it too, not just the clone,
+# or total_pumped(model) below will silently return 0 instead of the real baseline.
+orig_results = solver.solve(model, tee=False)
 results = solver.solve(m, tee=False)  # tee=False to suppress overwhelming solver output
 print("Solver Status: ", results.solver.status)
 print("Termination Condition: ", results.solver.termination_condition)
@@ -482,6 +484,8 @@ for i in range(1, len(times)):
 
 solver = SolverFactory('gurobi')  # only gurobi is available in env
 solver.options['TimeLimit'] = 300  # 5min time limit
+# `model` is rebuilt fresh and UNSOLVED on every execution -- re-solve it too, not just the clone.
+orig_results = solver.solve(model, tee=False)
 results = solver.solve(m, tee=False)
 print("Solver Status: ", results.solver.status)
 print("Termination Condition: ", results.solver.termination_condition)
@@ -500,8 +504,8 @@ else:
     So, you don't need to repeat the source code that has already been provided by Code reminder.
     - The standard code for re-solving the model has been given in the examples,
     So, you MUST use the standard code to re-solve the model to avoid undesired execution errors and long execution result.
-    - ALWAYS re-solve on a CLONE created with model.clone(). NEVER add constraints to, or otherwise mutate, the original solved model: the same model object is reused for later questions, and leftover constraints will silently corrupt those answers (this is the "model state became corrupted" failure).
-    - For any "can I get a similar / alternative solution" question, ALWAYS print BOTH the original objective and the new objective and their difference, so the explainer can report the exact extra cost instead of guessing. Use value(...) to read objective and parameter values (not a bare model.obj()), and import the Pyomo names you use at the top of your snippet.
+    - ALWAYS re-solve on a CLONE created with model.clone(). NEVER add constraints to, or otherwise mutate, the original solved model: the same model object is reused for later questions, and leftover constraints will silently corrupt those answers (this is the "model state became corrupted" failure). Note that `model` itself is also rebuilt fresh and UNSOLVED at the start of every execution: if you need its current values as a baseline, re-solve `model` too (see examples) rather than assuming it already holds a solution.
+    - For any "can I get a similar / alternative solution" question, ALWAYS print BOTH the original objective and the new objective and their difference, so the explainer can report the exact extra cost instead of guessing. Use value(...) to read objective and parameter values (not a bare model.obj()), and import the Pyomo names you use at the top of your snippet. Guard any division by an objective/baseline value against zero (0.0 is a valid objective, not just a bug symptom).
     - If the question asks whether a change can ELIMINATE something (e.g., "remove the need to pump") or asks for a threshold, do NOT test a single guessed value. Sweep a range, each time on a fresh clone, and report the value at which the objective reaches the target (e.g., the highest initial level that still gives zero pumping). For example:
         for trial in [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40]:
             m = model.clone()
@@ -1208,6 +1212,8 @@ def get_fn_json(fn_name, mode):
             uncertainty_level_property
     elif fn_name == "stochastic_hedging_analysis":
         fn_json_template["function"]["description"] += stochastic_hedging_analysis_fn_description
+        fn_json_template["function"]["parameters"]["properties"]["uncertainty_level"] = \
+            uncertainty_level_property
     elif fn_name == "evaluate_modification":
         fn_delta_json_template["function"]["description"] += evaluate_modification_fn_description
         return fn_delta_json_template

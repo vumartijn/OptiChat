@@ -967,7 +967,9 @@ class Engineer(Agent):
                     fn_output = scenario_risk_assessment(self.queried_components, self.queried_model,
                                                          models_dict, uncertainty_level=uncertainty_level)
                 elif fn_name == 'stochastic_hedging_analysis':
-                    fn_output = stochastic_hedging_analysis(self.queried_components, self.queried_model, models_dict)
+                    uncertainty_level = json.loads(fn_args).get("uncertainty_level", "moderate")
+                    fn_output = stochastic_hedging_analysis(self.queried_components, self.queried_model,
+                                                             models_dict, uncertainty_level=uncertainty_level)
                 else:
                     raise Exception("invalid function name")
                 # Some predefined functions return a soft "Error:" string when they
@@ -1019,7 +1021,7 @@ class Engineer(Agent):
                 self.fake_team_conversation.append({"agent_name": 'Programmer', "agent_response": code_output})
                 return code_output, revision_code, print_code
 
-            except AssertionError as e:
+            except (AssertionError, IndexError) as e:
                 print(e)
                 # import traceback
                 # err = traceback.format_exc()
