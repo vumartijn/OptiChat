@@ -49,7 +49,7 @@ MODEL = default_model(LLM_PROVIDER)
 
 TEMPERATURE = 0.1
 
-ROUND = 1
+ROUND = 99
 
 # Questions 1-5 are asked together in a single batch turn.
 BATCH_QUESTIONS = [
@@ -63,9 +63,8 @@ BATCH_QUESTIONS = [
 SEQUENTIAL_QUESTIONS = [
     "5. Is it possible to get similar solutions, by pumping less at hours where I now pump a lot, and pumping more at hours where I now pump little?",
     "6. Why is this the optimal pumping schedule?",
-    "7. Would starting at a lower initial level have removed the need to pump?",
-    "8. If we run the original schedule and the forecast is a bit uncertain, how likely are we to flood?",
-    "9. What schedule should we use instead when the forecast is uncertain?",
+    "7. If we run the original schedule and the forecast is a bit uncertain, how likely are we to flood?",
+    "8. What schedule should we use instead when the forecast is uncertain?",
 ]
 
 
@@ -88,8 +87,7 @@ class Args:
         self.external_experiment = False
         self.fn_names = ["feasibility_restoration", "sensitivity_analysis",
                          "components_retrival", "evaluate_modification",
-                         "alternative_solutions", "scenario_risk_assessment",
-                         "stochastic_hedging_analysis", "external_tools"]
+                         "external_tools"]
 
 
 def process_model(args, interpreter):
