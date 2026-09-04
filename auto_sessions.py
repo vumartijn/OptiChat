@@ -65,7 +65,7 @@ SEQUENTIAL_QUESTIONS = [
     "6. Why is this the optimal pumping schedule?",
     "7. Would starting at a lower initial level have removed the need to pump?",
     "8. If we run the original schedule and the forecast is a bit uncertain, how likely are we to flood?",
-    "9. How can I improve my schedule such that flooding becomes less likely? Please give this schedule.",
+    "9. What schedule should we use instead when the forecast is uncertain?",
 ]
 
 
