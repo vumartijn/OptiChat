@@ -279,8 +279,9 @@ Example: "Will the optimal value be greatly affected if we have **two more** [co
 5. alternative_solutions:
 Use when: The model is feasible/optimal and the user asks why the current solution is optimal, or why the alternative solutions are not better. It does not look for similar solutions. This tool asks Gurobi for the next-best solutions in its solution pool and contrasts each alternative (Q) against the incumbent optimal solution (P): for every alternative it reports the objective value, how much worse it is than the optimum (the "price" of that alternative), and which decision variables take different values. It does not calculate similar solutions.
 Example: "Why is this the optimal solution?"
-Example: "Why are the other solutions not better than this one"
-Example: "Show me the alternative solutions for [component name] and how much worse they are"
+Example: "Did the solver find any ties, i.e. other solutions with exactly the same objective value?"
+Example: "How much worse is the runner-up solution that the solver already found?"
+Example: "Which variables differ between the best and the second-best solution in the solver's pool?"
 [component name] category: variables (optional; leave empty to compare all variables).
 
 6. scenario_risk_assessment:

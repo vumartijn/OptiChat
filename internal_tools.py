@@ -1305,7 +1305,7 @@ def scenario_risk_assessment(queried_components: List[Dict], queried_model, mode
 
 def stochastic_hedging_analysis(queried_components: List[Dict], queried_model, models_dict,
                                 uncertainty_level: str = 'moderate',
-                                n_scenarios: int = 100, phi: float = PHI_PERSISTENCE,
+                                n_scenarios: int = 50, phi: float = PHI_PERSISTENCE,
                                 violation_penalty: float = VIOLATION_PENALTY,
                                 seed: int = 2026, tol: float = 1e-5):
     """Two-stage stochastic program over sampled forecast scenarios (extensive
