@@ -22,9 +22,8 @@ import os
 import datetime
 
 from extractor import initial_loading, update_model_representation
-from utils import get_agents, OptiChat_workflow_exp
+from utils import get_agents, OptiChat_workflow_exp, make_client, default_model, get_provider
 from pyomo.opt import TerminationCondition
-from anthropic import Anthropic
 from dotenv import load_dotenv, find_dotenv
 
 _ = load_dotenv(find_dotenv())
@@ -37,34 +36,36 @@ _ = load_dotenv(find_dotenv())
 # inside OptiChat.
 OPTICHAT_MODEL = "Baseline"
 
+# Honors the LLM_PROVIDER env var; falls back to Nebula/Claude per get_provider().
+LLM_PROVIDER = get_provider()
+
 MODEL_PATH = "Feas/mixed_integer_rtc.py"
 
-OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/chats/{OPTICHAT_MODEL}"
+OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/chats/{LLM_PROVIDER}_{OPTICHAT_MODEL}"
 
 NUM_SESSIONS = 5
 
-CLAUDE_MODEL = "claude-haiku-4-5"
+MODEL = default_model(LLM_PROVIDER)
 
 TEMPERATURE = 0.1
 
+ROUND = 1
 
 # Questions 1-5 are asked together in a single batch turn.
 BATCH_QUESTIONS = [
-    "What is the maximum water level the basin can hold?",
-    "Why is the orifice used in preference to the pump when both are physically possible?",
-    "How much water is pumped in total in the optimal solution?",
-    "List the hours when the pump runs and the flow at each hour.",
-    "Why is there no pumping at the start of the horizon?",
+    "1. What is the maximum water level the basin can hold?",
+    "2. Why is the orifice used in preference to the pump when both are physically possible?",
+    "3. How much water is pumped in total in the optimal solution?",
+    "4. List the hours when the pump runs and the flow at each hour.",
 ]
 
 # Questions 6-9 are asked one at a time, building on the conversation so far.
 SEQUENTIAL_QUESTIONS = [
-    "Would starting at a lower initial level have removed the need to pump?",
-    "If the basin limit were raised to 0.6 m, how much less would the model pump?",
-    "Is it possible to get a similar solution, by pumping less at hours where I "
-    "now pump a lot, and pumping more at hours where I now pump little?",
-    "If I were to constrain the pump to never exceed 4 m³/s in any single hour "
-    "(reducing the peak pulses), how much would the total pumped volume increase?",
+    "5. Is it possible to get similar solutions, by pumping less at hours where I now pump a lot, and pumping more at hours where I now pump little?",
+    "6. Why is this the optimal pumping schedule?",
+    "7. Would starting at a lower initial level have removed the need to pump?",
+    "8. If we run the original schedule and the forecast is a bit uncertain, how likely are we to flood?",
+    "9. How can I improve my schedule such that flooding becomes less likely? Please give this schedule.",
 ]
 
 
@@ -86,7 +87,9 @@ class Args:
         self.internal_experiment = False
         self.external_experiment = False
         self.fn_names = ["feasibility_restoration", "sensitivity_analysis",
-                         "components_retrival", "evaluate_modification", "external_tools"]
+                         "components_retrival", "evaluate_modification",
+                         "alternative_solutions", "scenario_risk_assessment",
+                         "stochastic_hedging_analysis", "external_tools"]
 
 
 def process_model(args, interpreter):
@@ -158,18 +161,27 @@ def run_session(session_idx, args, agents):
     models_dict, messages, chat_history = process_model(args, interpreter)
     detailed_chat_history = list(chat_history)  # seed with the model-upload turn
 
-    # ---- Questions 1-5: one combined batch turn ----
-    batch_prompt = "\n".join(f"{i}. {q}" for i, q in enumerate(BATCH_QUESTIONS, start=1))
-    print(f"[session {session_idx}] asking questions 1-5 (batch)")
-    ask(args, coordinator, engineer, explainer, messages, models_dict,
-        batch_prompt, chat_history, detailed_chat_history)
-
-    # ---- Questions 6-9: asked sequentially ----
-    for offset, q in enumerate(SEQUENTIAL_QUESTIONS):
-        qnum = len(BATCH_QUESTIONS) + offset + 1
-        print(f"[session {session_idx}] asking question {qnum} (sequential)")
+    try:
+        # ---- Questions 1-5: one combined batch turn ----
+        batch_prompt = "\n".join(f"{i}. {q}" for i, q in enumerate(BATCH_QUESTIONS, start=1))
+        print(f"[session {session_idx}] asking questions 1-5 (batch)")
         ask(args, coordinator, engineer, explainer, messages, models_dict,
-            q, chat_history, detailed_chat_history)
+            batch_prompt, chat_history, detailed_chat_history)
+
+        # ---- Questions 6-9: asked sequentially ----
+        for offset, q in enumerate(SEQUENTIAL_QUESTIONS):
+            qnum = len(BATCH_QUESTIONS) + offset + 1
+            print(f"[session {session_idx}] asking question {qnum} (sequential)")
+            ask(args, coordinator, engineer, explainer, messages, models_dict,
+                q, chat_history, detailed_chat_history)
+    except Exception as e:
+        # Save whatever the session produced so far instead of losing it entirely.
+        import traceback
+        err = traceback.format_exc()
+        print(f"[session {session_idx}] ERROR during session, saving partial history: {e}")
+        note = f"[session crashed: {err}]"
+        chat_history.append(note)
+        detailed_chat_history.append(note)
 
     return chat_history, detailed_chat_history
 
@@ -178,12 +190,12 @@ def save_chat_history(session_idx, chat_history, detailed_chat_history, run_stam
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     base = f"{run_stamp}_session_{session_idx}_{OPTICHAT_MODEL}"
 
-    path = os.path.join(OUTPUT_DIR, f"chat_history_{base}.md")
+    path = os.path.join(OUTPUT_DIR, f"{ROUND}chat_history_{base}.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n\n".join(chat_history))
     print(f"[session {session_idx}] chat history saved to {path}")
 
-    detailed_path = os.path.join(OUTPUT_DIR, f"detailed_chat_history_{base}.md")
+    detailed_path = os.path.join(OUTPUT_DIR, f"{ROUND}detailed_chat_history_{base}.md")
     with open(detailed_path, "w", encoding="utf-8") as f:
         f.write("\n\n".join(detailed_chat_history))
     print(f"[session {session_idx}] detailed chat history saved to {detailed_path}")
@@ -191,8 +203,8 @@ def save_chat_history(session_idx, chat_history, detailed_chat_history, run_stam
 
 def main():
     run_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    client = Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
-    args = Args(CLAUDE_MODEL, TEMPERATURE)
+    client = make_client(LLM_PROVIDER)
+    args = Args(MODEL, TEMPERATURE)
     agents = get_agents(args.fn_names, client, args.claude_model)
 
     for session_idx in range(1, NUM_SESSIONS + 1):

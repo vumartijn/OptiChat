@@ -1,5 +1,4 @@
 import streamlit as st
-from anthropic import Anthropic
 import os
 from io import StringIO
 import time
@@ -8,7 +7,7 @@ import io
 from dotenv import load_dotenv, find_dotenv
 from extractor import initial_loading
 from extractor import update_model_representation, get_skipJSON, feed_skipJSON
-from utils import get_agents
+from utils import get_agents, make_client, model_options
 from utils import OptiChat_workflow_exp
 from pyomo.opt import TerminationCondition
 import json
@@ -22,7 +21,7 @@ def string_generator(long_string, chunk_size=50):
         time.sleep(0.1)  # Optionally add a small delay between each yield
 
 
-client = Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
+client = make_client()
 st.session_state['client'] = client
 st.session_state['temperature'] = 0.1  # by default
 st.session_state['json_mode'] = True  # by default
@@ -37,11 +36,12 @@ st.set_page_config(layout='wide')
 st.title("OptiChat: Talk to your Optimization Model")
 
 
-claude_model = st.sidebar.selectbox(label="Claude Model", options=["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"], )
+_model_options = model_options()
+claude_model = st.sidebar.selectbox(label="Model", options=_model_options, )
 st.session_state["claude_model"] = claude_model
 # Set a default model
 if "claude_model" not in st.session_state:
-    st.session_state["claude_model"] = "claude-haiku-4-5"
+    st.session_state["claude_model"] = _model_options[0]
 if "models_dict" not in st.session_state:
     st.session_state["models_dict"] = {"model_representation": {}}
 if "code" not in st.session_state:

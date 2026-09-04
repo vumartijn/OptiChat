@@ -25,7 +25,50 @@ from prompts import get_prompts, get_tools, get_syntax_guidance_tool
 from agents import Interpreter, Coordinator, Explainer, Engineer
 
 
-def get_agents(fn_names, client, llm='claude-haiku-4-5'):
+# --- LLM provider selection -------------------------------------------------
+# OptiChat keeps OpenAI-shaped messages/tools as its internal format (see the
+# adapters in agents.py), so the same agents can talk to either the Anthropic
+# API or any OpenAI-compatible endpoint. Nebula (the VU's self-hosted platform)
+# is OpenAI-compatible, so we reach it with the `openai` client plus a base_url.
+NEBULA_BASE_URL = os.environ.get("NEBULA_BASE_URL", "https://nebula.cs.vu.nl/api")
+NEBULA_MODELS = ["FAST.gpt-oss:120b", "FAST.gemma4:31b", "FAST.gemma3:12b", "llama3.1:8b", "SURF.Qwen3.5 122B A10B NVFP4"]
+CLAUDE_MODELS = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
+
+
+def get_provider():
+    """Which LLM backend to use: 'nebula' (OpenAI-compatible) or 'claude'.
+
+    Honors LLM_PROVIDER when set; otherwise prefers Nebula whenever
+    NEBULA_API_KEY is present, falling back to Claude.
+    """
+    provider = os.environ.get("LLM_PROVIDER")
+    if provider:
+        return provider.lower()
+    return "nebula" if os.environ.get("NEBULA_API_KEY") else "claude"
+
+
+def model_options(provider=None):
+    provider = provider or get_provider()
+    return NEBULA_MODELS if provider == "nebula" else CLAUDE_MODELS
+
+
+def default_model(provider=None):
+    return model_options(provider)[0]
+
+
+def make_client(provider=None):
+    """Construct the LLM client for the selected provider."""
+    provider = provider or get_provider()
+    if provider == "nebula":
+        from openai import OpenAI
+        return OpenAI(api_key=os.environ["NEBULA_API_KEY"], base_url=NEBULA_BASE_URL)
+    if provider == "claude":
+        return Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
+    raise ValueError(f"Unknown LLM provider: {provider!r} (expected 'nebula' or 'claude')")
+
+
+def get_agents(fn_names, client, llm=None):
+    llm = llm or default_model()
     interpreter = Interpreter(client=client, llm=llm)
     explainer = Explainer(client=client, llm=llm)
 
