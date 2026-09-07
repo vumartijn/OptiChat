@@ -49,7 +49,7 @@ MODEL = default_model(LLM_PROVIDER)
 
 TEMPERATURE = 0.1
 
-ROUND = 99
+ROUND = 90
 
 # Questions 1-5 are asked together in a single batch turn.
 BATCH_QUESTIONS = [
@@ -63,7 +63,7 @@ BATCH_QUESTIONS = [
 SEQUENTIAL_QUESTIONS = [
     "5. Is it possible to get similar solutions, by pumping less at hours where I now pump a lot, and pumping more at hours where I now pump little?",
     "6. Why is this the optimal pumping schedule?",
-    "7. If we run the original schedule and the forecast is a bit uncertain, how likely are we to flood?",
+    "7. If we run this schedule and the forecast is uncertain, how likely are we to flood?",
     "8. What schedule should we use instead when the forecast is uncertain?",
 ]
 
