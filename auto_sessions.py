@@ -63,9 +63,8 @@ BATCH_QUESTIONS = [
 SEQUENTIAL_QUESTIONS = [
     "5. Is it possible to get similar solutions, by pumping less at hours where I now pump a lot, and pumping more at hours where I now pump little?",
     "6. Why is this the optimal pumping schedule?",
-    "7. Would starting at a lower initial level have removed the need to pump?",
-    "8. If we run this schedule and the forecast is uncertain, how likely are we to flood?",
-    "9. What schedule should we use instead when the forecast is uncertain?",
+    "7. If we run this schedule and the forecast is uncertain, how likely are we to flood?",
+    "8. What schedule should we use instead when the forecast is uncertain?",
 ]
 
 
