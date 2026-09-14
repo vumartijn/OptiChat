@@ -41,7 +41,7 @@ LLM_PROVIDER = get_provider()
 
 MODEL_PATH = "Feas/mixed_integer_rtc.py"
 
-OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/chats/{LLM_PROVIDER}_{OPTICHAT_MODEL}"
+OUTPUT_DIR = f"/Users/martijnkrikke/Documents/Scriptie/Scriptie_martijn/chats/{LLM_PROVIDER}_{OPTICHAT_MODEL}"
 
 NUM_SESSIONS = 5
 
