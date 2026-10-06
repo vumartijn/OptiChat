@@ -1,3 +1,17 @@
+This is my fork of [OptiChat](https://github.com/li-group/OptiChat) (Chen et al.), adapted for my thesis. The original README is kept below.
+
+### Differences with the original
+
+- Claude instead of GPT-4. All agents now run on Anthropic's Claude.
+- Three new tools for the Engineer agent:
+  - alternative_solutions
+  - flood-risk assessment
+  - stochastic optimisation
+- Water-management adaptation and a classification of every parameter and constraint.
+- Nebula backend. An OpenAI-compatible client branch for VU's Nebula platform.
+- auto_sessions.py runs the questions sequentially for several sessions.
+
+
 # OptiChat
 Welcome to the [OptiChat](https://arxiv.org/abs/2501.08406) page. OptiChat is an interactive dialogue system powered by Anthropic's Claude LLM, augmented by Gurobi, Pyomo, predefined functions, and code generation, and aimed at helping practitioners interact with optimization models using natural language.
 
